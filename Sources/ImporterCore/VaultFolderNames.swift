@@ -6,7 +6,7 @@
  *              "Title.md" and "Title 2.md" instead of one overwriting the other.
  *
  * Authors: Bahey Shalash
- * Version: 0.1
+ * Version: 0.2
  * Date: 26/11/2026
  */
 
@@ -33,6 +33,22 @@ public struct VaultFolderNames: Sendable {
             let name = pathExtension.map { "\(numberedStem).\($0)" } ?? numberedStem
             if takenNames.insert(name.lowercased()).inserted {
                 return name
+            }
+            number += 1
+        }
+    }
+
+    /// Takes the first stem of `stem`, `stem 2`, `stem 3` and so on that is free with every one of `pathExtensions`
+    /// (`nil` for a name without extension), takes those names, and returns the stem. A page's note "Week 1.md" and the
+    /// folder "Week 1" of its subpages are claimed together this way, so they keep the same number.
+    public mutating func claimStem(_ stem: String, withEachOf pathExtensions: [String?]) -> String {
+        var number = 1
+        while true {
+            let numberedStem = number == 1 ? stem : "\(stem) \(number)"
+            let names = pathExtensions.map { pathExtension in pathExtension.map { "\(numberedStem).\($0)" } ?? numberedStem }
+            if names.allSatisfy({ !takenNames.contains($0.lowercased()) }) {
+                for name in names { takenNames.insert(name.lowercased()) }
+                return numberedStem
             }
             number += 1
         }

@@ -7,7 +7,7 @@
  *              Obsidian Bases and attachments), starting with Notion; a warning in any of its targets fails the build.
  *
  * Authors: Bahey Shalash
- * Version: 0.1
+ * Version: 0.2
  * Date: 26/11/2026
  */
 import PackageDescription
@@ -19,15 +19,20 @@ let package = Package(
     name: "Importer",
     platforms: [.iOS("26.0"), .macOS("26.0")],
     products: [
-        .library(name: "Importer", targets: ["ImporterCore", "NotionImport"])
+        .library(name: "Importer", targets: ["ImporterCore", "NotionImport"]),
+        .executable(name: "importer", targets: ["ImporterCommand"])
     ],
     targets: [
         // What every format shares: vault file names, the place imported files are written to, the import report.
         .target(name: "ImporterCore"),
         // Notion's HTML export and Notion's API.
         .target(name: "NotionImport", dependencies: ["ImporterCore"]),
-        .testTarget(name: "ImporterCoreTests", dependencies: ["ImporterCore"]),
-        .testTarget(name: "NotionImportTests", dependencies: ["NotionImport"])
+        // The `importer` command, for manual runs on real exports.
+        .executableTarget(name: "ImporterCommand", dependencies: ["ImporterCore", "NotionImport"]),
+        // Zip archives written by the tests and the place of the committed test material.
+        .target(name: "ImporterTestSupport", dependencies: ["ImporterCore"], path: "Tests/ImporterTestSupport"),
+        .testTarget(name: "ImporterCoreTests", dependencies: ["ImporterCore", "ImporterTestSupport"]),
+        .testTarget(name: "NotionImportTests", dependencies: ["NotionImport", "ImporterTestSupport"])
     ]
 )
 

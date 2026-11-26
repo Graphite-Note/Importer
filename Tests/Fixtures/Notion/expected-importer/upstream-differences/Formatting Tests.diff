@@ -1,0 +1,297 @@
+@@ 18
+-     This is a bug and must be corrected by Importer.  
+-     
++     This is a bug and must be corrected by Importer.
+@@ 22
+-     Note: linebreaks should work as normal for all other nested text blocks in the callout.  
+-     
++     Note: linebreaks should work as normal for all other nested text blocks in the callout.
+@@ 25
+-     This must be corrected by importer.  
+-     
++     This must be corrected by importer.
+@@ 39
+- A new text block with two consecutive forced linebreaks below—  
+-   
+- —still the same block down here, but equivalent to a new paragraph in Obsidian.  
++ A new text block with two consecutive forced linebreaks below—
++ 
++ —still the same block down here, but equivalent to a new paragraph in Obsidian.
+@@ 49
+- **This is all in bold but there’s a double line-break**  
+-   
+- **here that should be split apart.**  
++ **This is all in bold but there’s a double line-break**
+@@ 53
++ **here that should be split apart.**
++ 
+@@ 56
+- > 
++ >
+@@ 62
+- > 
++ >
+@@ 65
+- > 
+- > A new text block with two consecutive forced linebreaks below—  
+- >   
+- > —still the same block down here, but equivalent to a new paragraph in Obsidian.  
++ >
++ > A new text block with two consecutive forced linebreaks below—
++ >
++ > —still the same block down here, but equivalent to a new paragraph in Obsidian.
+@@ 70
+- > [!important] Title of the callout…<br>with a **linebreak** here.
+- > 
++ > [!info] Title of the callout…<br>with a **linebreak** here.
+@@ 74
+- > 
+- > This paragraph of the callout…  
+- >   
++ >
++ > This paragraph of the callout…
++ >
+@@ 79
+- > [!important] _**A Formatted Callout Title**_
+- > 
++ > [!info] _**A Formatted Callout Title**_
+@@ 83
+- > [!important] Callout body with no title.
++ > [!info] Callout body with no title.
+@@ 98
+- > 
++ >
+@@ 100
+- > 
+- > $$|x| = \begin{cases}  
+- > -x : & x \lt 0 \\  
+- > x : & x\ge 0  
+- > \end{cases}$$
+- > 
++ >
++ > $$
++ > |x| = \begin{cases}
++ > -x : & x \lt 0 \\
++ > x  : & x\ge 0
++ > \end{cases}
++ > $$
++ >
+@@ 107
+- > > 
++ > >
+@@ 109
+- > > > 
++ > > >
+@@ 111
+- > > > > 
++ > > > >
+@@ 113
+- > > > > > 
++ > > > > >
+@@ 115
+- > > > > > 
+- > > > > > $$|x| = \begin{cases}  
+- > > > > > -x : & x \lt 0 \\  
+- > > > > > x : & x\ge 0  
+- > > > > > \end{cases}$$
+- > > > > 
++ > > > > >
++ > > > > > $$
++ > > > > > |x| = \begin{cases}
++ > > > > > -x : & x \lt 0 \\
++ > > > > > x  : & x\ge 0
++ > > > > > \end{cases}
++ > > > > > $$
++ > > > >
+@@ 122
+- > > > 
++ > > >
+@@ 124
+- > > 
++ > >
+@@ 128
+- > 
++ >
+@@ 130
+- > 
++ >
+@@ 132
+- > > 
++ > >
+@@ 135
+- > [!important] Title for Callout
+- > 
++ > [!info] Title for Callout
+@@ 138
+- > 
+- > > [!important] Title for Nested Callout
+- > > 
++ >
++ > > [!info] Title for Nested Callout
+@@ 142
+- > > 
+- > > > [!important] Title for Double-Nested Callout
+- > > > 
++ > >
++ > > > [!info] Title for Double-Nested Callout
+@@ 146
+- > > > 
++ > > >
+@@ 148
+- > > > 
+- > > > $$|x| = \begin{cases}  
+- > > > -x : & x \lt 0 \\  
+- > > > x : & x\ge 0  
+- > > > \end{cases}$$
+- > > > 
++ > > >
++ > > > $$
++ > > > |x| = \begin{cases}
++ > > > -x : & x \lt 0 \\
++ > > > x  : & x\ge 0
++ > > > \end{cases}
++ > > > $$
++ > > >
+@@ 163
+-         
+-         $$f(x)=e^z$$
+-         
+-         $$f(x)=e^x$$
+-         
++ 
++         $$
++         f(x)=e^z
++         $$
++ 
++         $$
++         f(x)=e^x
++         $$
+@@ 188
+- - \#_
++ - \#\_
+@@ 190
+- - \#_123
++ - \#\_123
+@@ 199
+- - \#§±_-123
++ - \#§±\_-123
+@@ 210
+-     
+-     ```Plain
+-     \#abc
++ 
+@@ 214
+-     
++     #abc
++     ```
+@@ 220
+-     
+-     $$x = \begin{cases}  
+-     a\#b &: x<0 \\  
+-     0 &: x\ge0  
+-     \end{cases}$$
+-     
+- - An internal link to a previous heading: .
+@@ 228
+-   
++     $$
++     x = \begin{cases}
++     a\#b &: x<0 \\
++     0 &: x\ge0
++     \end{cases}
++     $$
++ - An internal link to a previous heading: .
+@@ 236
+- > [!important] Title for Callout
+- > 
++ > [!info] Title for Callout
+@@ 239
+- > 
+- > $$f(t)=Ae^{i\omega t},$$
+- > 
++ >
++ > $$
++ > f(t)=Ae^{i\omega t},
++ > $$
++ >
+@@ 244
+- > [!important] Title for Multiline Math Nested in Callout
+- > 
++ > [!info] Title for Multiline Math Nested in Callout
+@@ 247
+- > 
+- > $$\begin{align}  
+- > f(t) &=Ae^{i\omega t} \\  
+- > g(t) &= Be^{i\sigma t},  
+- > \end{align}$$
+- > 
++ >
++ > $$
++ > \begin{align}
++ > f(t) &=Ae^{i\omega t} \\
++ > g(t) &= Be^{i\sigma t},
++ > \end{align}
++ > $$
++ >
+@@ 259
+- $$f(t)=Ae^{i\omega t},$$
++ $$
++ f(t)=Ae^{i\omega t},
++ $$
+@@ 267
+- $$|x| = \begin{cases}  
+- -x : & x \lt 0 \\  
+- x : & x\ge 0  
+- \end{cases}$$
++ $$
++ |x| = \begin{cases}
++ -x : & x \lt 0 \\
++ x  : & x\ge 0
++ \end{cases}
++ $$
+@@ 287
+- ```LaTeX
++ ```latex
+@@ 297
+- $$\mathrm{abs}(x)=|x|  
+- =\begin{cases}  
+- -x : & x \lt 0 \\  
+- x : & x\ge 0  
+- \end{cases}$$
++ $$
++ \mathrm{abs}(x)=|x|
++ =\begin{cases}
++ -x : & x \lt 0 \\
++ x  : & x\ge 0
++ \end{cases}
++ $$
+@@ 307
+- $$\renewcommand{\vec}[1]{\boldsymbol{#1}}  
+- \begin{align*}  
+- \vec{\dot v}_\alpha &=  
+- \vec f_\alpha (t) + \vec\xi_\alpha(t)  
+- \\  
+- \vec f_\alpha (t) &=  
+- {1\over\tau_\alpha} (\vec{ \bar v}_\alpha -  
+- \vec v_\alpha) +  
+- \sum_{\beta≠\alpha}\vec f_{\alpha\beta}(t) +  
+- \sum_{i}\vec f_{\alpha i}(t)  
+- \end{align*}$$
++ $$
++ \renewcommand{\vec}[1]{\boldsymbol{#1}}
++ \begin{align*}
++ \vec{\dot v}_\alpha &=
++ \vec f_\alpha (t) + \vec\xi_\alpha(t)
++ \\
++ \vec f_\alpha (t) &=
++ {1\over\tau_\alpha} (\vec{ \bar v}_\alpha -
++ \vec v_\alpha) +
++ \sum_{\beta≠\alpha}\vec f_{\alpha\beta}(t) +
++ \sum_{i}\vec f_{\alpha i}(t)
++ \end{align*}
++ $$
+@@ 327
+- [[Formatting Tests]]
++ [[Formatting Tests#Quotes, Callouts + Nesting]]
+@@ 340
++ 

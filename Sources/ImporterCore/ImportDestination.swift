@@ -6,7 +6,7 @@
  *              writes in the app, a folder on disk for tests and tools.
  *
  * Authors: Bahey Shalash
- * Version: 0.1
+ * Version: 0.2
  * Date: 26/11/2026
  */
 
@@ -23,12 +23,32 @@ public protocol ImportDestination: Sendable {
     /// `ImportDestinationError.fileAlreadyExists`.
     func writeNewFile(_ contents: Data, at path: VaultPath) async throws
 
+    /// A new, empty file at `path`, written piece by piece, for attachments too large to hold whole. A file already
+    /// there is never replaced: the call fails with `ImportDestinationError.fileAlreadyExists`.
+    func createNewFile(at path: VaultPath) async throws -> any ImportFileWriting
+
     /// The names of the files and folders inside the folder at `path`, empty when there is no folder there.
     func names(inFolderAt path: VaultPath) async throws -> [String]
+
+    /// Gives each property of `types` its type in the vault's property types (Obsidian's `.obsidian/types.json`),
+    /// keeping every type already assigned there. Returns the names of the properties that already had a different
+    /// type, which keep it.
+    func assignPropertyTypes(_ types: [String: PropertyType]) async throws -> [String]
+}
+
+/// A new file being written piece by piece.
+public protocol ImportFileWriting: Sendable {
+    /// Adds `bytes` at the end of the file.
+    func append(_ bytes: Data) async throws
+
+    /// Ends the file.
+    func close() async throws
 }
 
 /// Why a destination refused a write.
 public enum ImportDestinationError: Error, Equatable, Sendable {
     /// A file is already at the path written to.
     case fileAlreadyExists(VaultPath)
+    /// The vault's property types file is not a JSON object of the form Obsidian writes, so it is left as it is.
+    case unreadablePropertyTypes(VaultPath)
 }
