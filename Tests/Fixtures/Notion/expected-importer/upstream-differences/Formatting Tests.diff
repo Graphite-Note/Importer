@@ -15,8 +15,9 @@
 -   
 - —still the same block down here, but equivalent to a new paragraph in Obsidian.  
 + A new text block with two consecutive forced linebreaks below—
-+ 
+@@ 43
 + —still the same block down here, but equivalent to a new paragraph in Obsidian.
++ 
 @@ 49
 - **This is all in bold but there’s a double line-break**  
 -   

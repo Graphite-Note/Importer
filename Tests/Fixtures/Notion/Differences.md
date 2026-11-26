@@ -35,7 +35,7 @@ Only the end of the file: notes written here end with a line end, as text files 
 
 | Lines (upstream) | Difference | Why |
 | --- | --- | --- |
-| 18, 22, 25, 39, 49, 53, 65, 74 and others | No hard line break (two spaces) at the end of a paragraph or list item. Two line breaks in a row start a new paragraph (an empty line) instead of `  ` lines. | Reads the same. A hard break at the end of a paragraph does nothing, and a line holding only spaces is an empty line in Markdown, which upstream's page itself asks for ("2 forced linebreaks → 1 new Obsidian paragraph"). |
+| 18, 22, 25, 39, 43, 49, 53, 65, 74 and others | No hard line break (two spaces) at the end of a paragraph or list item. Two line breaks in a row start a new paragraph (an empty line) instead of `  ` lines. | Reads the same. A hard break at the end of a paragraph does nothing, and a line holding only spaces is an empty line in Markdown, which upstream's page itself asks for ("2 forced linebreaks → 1 new Obsidian paragraph"). |
 | Empty lines in quotes and callouts (56, 62, 98, 107 to 132, 146 and others) | `>` instead of `> `. | Reads the same, without trailing spaces. |
 | 70, 79, 83, 135, 138, 142, 236, 244 | `[!info]` instead of `[!important]`, with no empty `>` line after the title. | These callouts carry Notion's "info" icon. As in Block Reference. |
 | 100, 115, 148, 163, 220, 239, 247, 259, 267, 297, 307 | Math blocks with `$$` on their own lines, the TeX as Notion wrote it (`x  : &` keeps its two spaces). | Reads the same, as in Block Reference. Upstream collapses spaces inside the TeX as if it were text. |

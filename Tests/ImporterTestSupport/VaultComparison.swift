@@ -66,13 +66,34 @@ public func relativeFilePaths(under folder: URL) -> [String] {
 public func lineDifferences(from old: String, to new: String) -> String {
     let oldLines = old.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
     let newLines = new.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-    let difference = newLines.difference(from: oldLines)
+    // The longest common subsequence of lines, computed here rather than with the standard library's
+    // `difference(from:)`, whose choice among equal differences changes between Swift versions.
+    let rowCount = oldLines.count + 1
+    let columnCount = newLines.count + 1
+    var common = [Int](repeating: 0, count: rowCount * columnCount)
+    for oldIndex in stride(from: oldLines.count - 1, through: 0, by: -1) {
+        for newIndex in stride(from: newLines.count - 1, through: 0, by: -1) {
+            common[oldIndex * columnCount + newIndex] = oldLines[oldIndex] == newLines[newIndex]
+                ? common[(oldIndex + 1) * columnCount + newIndex + 1] + 1
+                : max(common[(oldIndex + 1) * columnCount + newIndex], common[oldIndex * columnCount + newIndex + 1])
+        }
+    }
     var removed: Set<Int> = []
     var inserted: Set<Int> = []
-    for change in difference {
-        switch change {
-        case .remove(let offset, _, _): removed.insert(offset)
-        case .insert(let offset, _, _): inserted.insert(offset)
+    var oldCursor = 0
+    var newCursor = 0
+    while oldCursor < oldLines.count || newCursor < newLines.count {
+        if oldCursor < oldLines.count, newCursor < newLines.count, oldLines[oldCursor] == newLines[newCursor] {
+            oldCursor += 1
+            newCursor += 1
+        } else if newCursor == newLines.count || (oldCursor < oldLines.count
+            && common[(oldCursor + 1) * columnCount + newCursor] >= common[oldCursor * columnCount + newCursor + 1])
+        {
+            removed.insert(oldCursor)
+            oldCursor += 1
+        } else {
+            inserted.insert(newCursor)
+            newCursor += 1
         }
     }
     var output: [String] = []

@@ -81,7 +81,12 @@ public struct FolderImportDestination: ImportDestination {
         document["types"] = assigned
         try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         let data = try JSONSerialization.data(withJSONObject: document, options: [.prettyPrinted, .sortedKeys])
+        #if os(WASI)
+        // WebAssembly's file system has no temporary files to write through.
+        try data.write(to: fileURL)
+        #else
         try data.write(to: fileURL, options: .atomic)
+        #endif
         return conflicting
     }
 
