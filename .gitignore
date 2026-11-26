@@ -4,3 +4,7 @@ DerivedData/
 xcuserdata/
 *.xcuserstate
 .DS_Store
+
+# Real exports found online, for local import tests only: never committed (no license, or a non-commercial one, and real
+# people's workspaces). The .nosync suffix keeps iCloud from uploading the folder.
+/LocalFixtures.nosync/
