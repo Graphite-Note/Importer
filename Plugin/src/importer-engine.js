@@ -7,7 +7,7 @@
  *              plugin API, never over a file already there) and temporary files kept as blobs.
  *
  * Authors: Bahey Shalash
- * Version: 0.2
+ * Version: 0.3
  * Date: 27/11/2026
  */
 
@@ -24,6 +24,30 @@ const failed = 1;
 const fileExists = 17;
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
+
+/// What the plugin says when the web view runs no WebAssembly. WebKit leaves `WebAssembly` undefined in Lockdown Mode
+/// (on the iPhone, the iPad and the Mac), so an import there would otherwise end in a bare ReferenceError.
+const webAssemblyUnavailableMessage = 'This importer needs WebAssembly, which this app\u2019s web view has turned off. '
+    + 'In Lockdown Mode, WebKit turns WebAssembly off on the iPhone, the iPad and the Mac. '
+    + 'In Graphite, Import \u203a From Notion\u2026 imports the export without it.';
+
+/// The 8 bytes of an empty module: its magic number and version.
+const emptyModule = new Uint8Array([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]);
+
+/// Why the module cannot run in `scope`, or null when it can: no `WebAssembly` object, one missing what the engine
+/// calls, or one that refuses the empty module.
+function webAssemblyUnavailableReason(scope = globalThis) {
+    const webAssembly = scope.WebAssembly;
+    if (typeof webAssembly !== 'object' || webAssembly === null) return webAssemblyUnavailableMessage;
+    for (const name of ['compile', 'instantiate', 'validate']) {
+        if (typeof webAssembly[name] !== 'function') return webAssemblyUnavailableMessage;
+    }
+    try {
+        return webAssembly.validate(emptyModule) ? null : webAssemblyUnavailableMessage;
+    } catch (error) {
+        return webAssemblyUnavailableMessage;
+    }
+}
 
 /// Texts separated by NUL, as the module passes them.
 function joinedTexts(texts) {
@@ -458,6 +482,8 @@ class NotionImportEngine {
      */
     async importNotionExport({ files, folder, date, exportYear, onProgress }) {
         if (this.instance) throw new Error('An engine runs one import.');
+        const unavailable = webAssemblyUnavailableReason();
+        if (unavailable) throw new Error(unavailable);
         await this.instantiate();
         this.onProgress = onProgress || null;
         const given = [folder || '', files.map((file) => file.name).join(', '), date, String(exportYear)];
@@ -504,4 +530,5 @@ class NotionImportEngine {
 
 if (typeof module !== 'undefined' && module.exports && typeof exports !== 'undefined') {
     module.exports.NotionImportEngine = NotionImportEngine;
+    module.exports.webAssemblyUnavailableReason = webAssemblyUnavailableReason;
 }

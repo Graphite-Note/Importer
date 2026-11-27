@@ -5,7 +5,7 @@
  * Description: The import window of the Notion importer plugin, in Obsidian's own variables.
  *
  * Authors: Bahey Shalash
- * Version: 0.1
+ * Version: 0.2
  * Date: 27/11/2026
  */
 
@@ -24,5 +24,9 @@
 }
 
 .notion-importer .notion-importer-status.mod-warning {
+    color: var(--text-error);
+}
+
+.notion-importer-unavailable.mod-warning {
     color: var(--text-error);
 }

@@ -80,6 +80,8 @@ jobs:
         run: |
           node Plugin/assemble-main.mjs "$RUNNER_TEMP/importer-embedded.wasm" "$RUNNER_TEMP/main.js"
           node --check "$RUNNER_TEMP/main.js"
+      - name: The plugin says so where its web view runs no WebAssembly
+        run: node --test Plugin/tests/*.test.cjs
       - name: The plugin's module imports the test exports as the linked package does
         run: |
           swift build --product importer

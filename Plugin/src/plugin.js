@@ -7,7 +7,7 @@
  *              of the vault, followed page by page, stopped if asked, and its report note opened.
  *
  * Authors: Bahey Shalash
- * Version: 0.2
+ * Version: 0.3
  * Date: 27/11/2026
  */
 
@@ -91,9 +91,15 @@ class NotionImportModal extends Modal {
             .setDesc('The vault folder the pages are imported into. Empty for the vault itself.')
             .addText((text) => text.setValue(this.folder).setPlaceholder('Notion').onChange((value) => { this.folder = value.trim(); }));
 
+        this.unavailable = webAssemblyUnavailableReason();
         this.progressEl = contentEl.createEl('progress', { cls: 'notion-importer-progress', attr: { max: '1', value: '0' } });
         this.progressEl.hidden = true;
         this.statusEl = contentEl.createEl('p', { cls: 'notion-importer-status' });
+        if (this.unavailable) {
+            this.statusEl.setText(this.unavailable);
+            this.statusEl.addClass('mod-warning');
+            if (this.fileInput) this.fileInput.disabled = true;
+        }
 
         const buttons = new Setting(contentEl);
         buttons.addButton((button) => {
@@ -108,7 +114,7 @@ class NotionImportModal extends Modal {
     }
 
     updateButtons() {
-        if (this.importButton) this.importButton.setDisabled(this.files.length === 0 || this.engine !== null);
+        if (this.importButton) this.importButton.setDisabled(this.files.length === 0 || this.engine !== null || Boolean(this.unavailable));
     }
 
     stopOrClose() {
@@ -121,7 +127,7 @@ class NotionImportModal extends Modal {
     }
 
     async runImport() {
-        if (this.files.length === 0 || this.engine) return;
+        if (this.files.length === 0 || this.engine || this.unavailable) return;
         const folder = normalizePath(this.folder || '/') === '/' ? '' : normalizePath(this.folder);
         this.engine = new NotionImportEngine(importerModuleBytes(), pluginVault(this.app), this.plugin.request);
         this.plugin.runningEngine = this.engine;
@@ -186,6 +192,10 @@ class NotionImporterSettingTab extends PluginSettingTab {
     display() {
         const { containerEl } = this;
         containerEl.empty();
+        const unavailable = webAssemblyUnavailableReason();
+        if (unavailable) {
+            containerEl.createEl('p', { cls: 'notion-importer-unavailable mod-warning', text: unavailable });
+        }
         new Setting(containerEl)
             .setName('Import Notion’s HTML export')
             .setDesc('Pages as notes, databases as bases with typed properties, attachments as files, and a report note of '
