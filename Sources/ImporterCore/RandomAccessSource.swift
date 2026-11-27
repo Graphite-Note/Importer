@@ -3,14 +3,12 @@
  * ------------------------------
  * Layer: Core
  * Description: The export an import reads, given by the host as bytes read by range: a picked file, a part of
- *              another source, or bytes in memory.
+ *              another source, or bytes in memory. A file on disk is `FileRandomAccessSource`, in ImporterFileSystem.
  *
  * Authors: Bahey Shalash
- * Version: 0.1
- * Date: 26/11/2026
+ * Version: 0.2
+ * Date: 27/11/2026
  */
-
-import Foundation
 
 /// Bytes read by range, never all at once: a zip's central directory is read from its end, then each entry from its
 /// own offset, so an export of several GB is never held in memory.
@@ -19,7 +17,7 @@ public protocol RandomAccessSource: Sendable {
     var size: UInt64 { get }
 
     /// The bytes from `offset`, `count` of them or fewer when the source ends first.
-    func read(at offset: UInt64, count: Int) async throws -> Data
+    func read(at offset: UInt64, count: Int) async throws -> [UInt8]
 }
 
 /// Why a source could not be read.
@@ -30,42 +28,51 @@ public enum RandomAccessSourceError: Error, Equatable, Sendable {
 
 extension RandomAccessSource {
     /// Exactly `count` bytes from `offset`, or an error when the source ends first.
-    public func readExactly(at offset: UInt64, count: Int) async throws -> Data {
-        guard count >= 0, offset <= size, UInt64(count) <= size - offset else {
-            throw RandomAccessSourceError.rangeOutsideSource(offset: offset, count: count, size: size)
-        }
-        var bytes = Data()
-        while bytes.count < count {
-            let piece = try await read(at: offset + UInt64(bytes.count), count: count - bytes.count)
-            if piece.isEmpty {
-                throw RandomAccessSourceError.rangeOutsideSource(offset: offset, count: count, size: size)
-            }
-            bytes.append(piece)
-        }
-        return bytes
+    public func readExactly(at offset: UInt64, count: Int) async throws -> [UInt8] {
+        try await ImporterCore.readExactly(from: self, at: offset, count: count)
     }
 }
 
-/// A source held in memory, for small exports, nested archives already inflated, and tests.
-public struct DataRandomAccessSource: RandomAccessSource {
-    /// The bytes of the source.
-    public let data: Data
+/// Exactly `count` bytes of `source` from `offset`, or an error when the source ends first. A function of its own, not
+/// only a method of the protocol's extension, because Embedded Swift cannot call such a method on `any
+/// RandomAccessSource`.
+package func readExactly(from source: any RandomAccessSource, at offset: UInt64, count: Int) async throws -> [UInt8] {
+    let size = source.size
+    guard count >= 0, offset <= size, UInt64(count) <= size - offset else {
+        throw RandomAccessSourceError.rangeOutsideSource(offset: offset, count: count, size: size)
+    }
+    var bytes: [UInt8] = []
+    bytes.reserveCapacity(count)
+    while bytes.count < count {
+        let piece = try await source.read(at: offset + UInt64(bytes.count), count: count - bytes.count)
+        if piece.isEmpty {
+            throw RandomAccessSourceError.rangeOutsideSource(offset: offset, count: count, size: size)
+        }
+        bytes.append(contentsOf: piece)
+    }
+    return bytes
+}
 
-    public init(_ data: Data) {
-        self.data = data
+/// A source held in memory, for small exports, nested archives already inflated, and tests.
+public struct MemoryRandomAccessSource: RandomAccessSource {
+    /// The bytes of the source.
+    public let bytes: [UInt8]
+
+    public init(_ bytes: [UInt8]) {
+        self.bytes = bytes
     }
 
     public var size: UInt64 {
-        UInt64(data.count)
+        UInt64(bytes.count)
     }
 
-    public func read(at offset: UInt64, count: Int) async throws -> Data {
+    public func read(at offset: UInt64, count: Int) async throws -> [UInt8] {
         guard offset <= size else {
             throw RandomAccessSourceError.rangeOutsideSource(offset: offset, count: count, size: size)
         }
-        let start = data.startIndex + Int(offset)
-        let end = start + min(count, data.count - Int(offset))
-        return Data(data[start..<end])
+        let start = Int(offset)
+        let end = start + min(max(count, 0), bytes.count - start)
+        return Array(bytes[start..<end])
     }
 }
 
@@ -85,31 +92,10 @@ public struct SliceRandomAccessSource: RandomAccessSource {
         self.size = size
     }
 
-    public func read(at offset: UInt64, count: Int) async throws -> Data {
+    public func read(at offset: UInt64, count: Int) async throws -> [UInt8] {
         guard offset <= size else {
             throw RandomAccessSourceError.rangeOutsideSource(offset: offset, count: count, size: size)
         }
         return try await base.read(at: self.offset + offset, count: Int(min(UInt64(count), size - offset)))
-    }
-}
-
-/// A file on disk read by range, for tests and tools.
-public actor FileRandomAccessSource: RandomAccessSource {
-    public nonisolated let size: UInt64
-    private let handle: FileHandle
-
-    /// The file at `url`, opened for reading.
-    public init(url: URL) throws {
-        let handle = try FileHandle(forReadingFrom: url)
-        self.size = try handle.seekToEnd()
-        self.handle = handle
-    }
-
-    public func read(at offset: UInt64, count: Int) throws -> Data {
-        guard offset <= size else {
-            throw RandomAccessSourceError.rangeOutsideSource(offset: offset, count: count, size: size)
-        }
-        try handle.seek(toOffset: offset)
-        return try handle.read(upToCount: count) ?? Data()
     }
 }

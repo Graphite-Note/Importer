@@ -8,12 +8,13 @@
  *              nested zip, a path that leaves the export, and a vault that already has some of the names and types.
  *
  * Authors: Bahey Shalash
- * Version: 0.1
- * Date: 26/11/2026
+ * Version: 0.2
+ * Date: 27/11/2026
  */
 
 import Foundation
 import ImporterCore
+import ImporterFileSystem
 import ImporterTestSupport
 @testable import NotionImport
 import Testing
@@ -106,7 +107,7 @@ private func madeUpExport() -> [Data] {
 @Suite("A made-up Notion export")
 struct NotionMadeUpExportTests {
     private func importMadeUpExport(into vault: TemporaryVault) async throws -> NotionHTMLImportResult {
-        let sources: [any RandomAccessSource] = madeUpExport().map { DataRandomAccessSource($0) }
+        let sources: [any RandomAccessSource] = madeUpExport().map { MemoryRandomAccessSource(Array($0)) }
         let tree = try await ExportFileTree.reading(zipArchives: sources, named: ["Export.zip", "Export-Part-2.zip"],
                                                     temporaryStorage: MemoryTemporaryStorage())
         let options = NotionHTMLImportOptions(destinationFolder: VaultPath(components: ["School", "Notion"])!,

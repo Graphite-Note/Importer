@@ -12,7 +12,6 @@
  * Date: 27/11/2026
  */
 
-import Foundation
 import ImporterCore
 
 /// Where a link to a page or database of the export leads in the vault.
@@ -119,10 +118,10 @@ public struct NotionPageReader {
         let article = document.firstElement(where: { $0.tagName == "article" })
         pageIdentifier = article?.attributes["id"].flatMap(NotionPageReader.hyphenatedIdentifier)
         let titleElement = document.firstElement(where: { $0.tagName == "title" })
-        var title = (titleElement?.textContent ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        var title = (titleElement?.textContent ?? "").trimmingSpacesAndLineBreaks()
         if title.isEmpty {
             title = document.firstElement(where: { $0.hasClass("page-title") })?.textContent
-                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                .trimmingSpacesAndLineBreaks() ?? ""
         }
         if title.isEmpty, let name = exportPath.last.flatMap(NotionExportEntryName.init) {
             title = name.title
@@ -131,7 +130,7 @@ public struct NotionPageReader {
         if let body {
             for heading in body.descendants(where: { ["h1", "h2", "h3"].contains($0.tagName ?? "") }) {
                 if let identifier = heading.attributes["id"].flatMap(NotionPageReader.hyphenatedIdentifier) {
-                    headingTextByBlock[identifier] = heading.textContent.trimmingCharacters(in: .whitespacesAndNewlines)
+                    headingTextByBlock[identifier] = heading.textContent.trimmingSpacesAndLineBreaks()
                 }
             }
         }
@@ -193,7 +192,7 @@ public struct NotionPageReader {
         if let image = holder.firstDescendant(where: { $0.tagName == "img" }), let source = image.attributes["src"] {
             return imageReference(source, asWikiLink: true)
         }
-        let text = holder.textContent.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = holder.textContent.trimmingSpacesAndLineBreaks()
         return text.isEmpty ? nil : text
     }
 
@@ -342,7 +341,7 @@ public struct NotionPageReader {
         let style = summary?.attributes["style"] ?? ""
         let headingSizes = [("1.875em", 1), ("1.5em", 2), ("1.25em", 3)]
         // A toggle heading stays a heading: headings fold in Obsidian and Graphite, and links to them keep working.
-        if let level = headingSizes.first(where: { style.contains("font-size:\($0.0)") })?.1 {
+        if let level = headingSizes.first(where: { style.contains(text: "font-size:\($0.0)") })?.1 {
             return [.heading(level: level, title)] + blocks(of: content)
         }
         return [.callout(type: "note", title: title, folding: .folded, body: blocks(of: content))]
@@ -390,14 +389,14 @@ public struct NotionPageReader {
             if let image = iconHolder.firstDescendant(where: { $0.tagName == "img" }) {
                 icon = (nil, NotionCallouts.iconName(fromSource: image.attributes["src"] ?? ""))
             } else {
-                let emoji = iconHolder.textContent.trimmingCharacters(in: .whitespacesAndNewlines)
+                let emoji = iconHolder.textContent.trimmingSpacesAndLineBreaks()
                 if !emoji.isEmpty { icon = (emoji, nil) }
             }
         }
         var content = contentHolder?.children ?? []
         // The first block of a callout is its title: a paragraph, or the text Notion writes before the first block.
         var title: [MarkdownInline] = []
-        while let first = content.first, first.text?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true {
+        while let first = content.first, first.text?.trimmingSpacesAndLineBreaks().isEmpty == true {
             content.removeFirst()
         }
         if let first = content.first, first.tagName == "p" {
@@ -418,7 +417,7 @@ public struct NotionPageReader {
 
     private mutating func linkToPage(_ figure: HTMLNode) -> [MarkdownBlock] {
         guard let link = figure.firstDescendant(where: { $0.tagName == "a" }), let href = link.attributes["href"] else { return [] }
-        let label = textWithoutIcons(link).trimmingCharacters(in: .whitespacesAndNewlines)
+        let label = textWithoutIcons(link).trimmingSpacesAndLineBreaks()
         switch resolve(href: href) {
         case .page(let target, let heading):
             return [.paragraph([wikiLink(to: target, heading: heading, label: label)])]
@@ -430,7 +429,7 @@ public struct NotionPageReader {
     private mutating func bookmark(_ bookmark: HTMLNode) -> MarkdownBlock {
         let href = bookmark.attributes["href"] ?? ""
         let title = bookmark.firstDescendant(where: { $0.hasClass("bookmark-title") })?.textContent
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            .trimmingSpacesAndLineBreaks() ?? ""
         let description = bookmark.firstDescendant(where: { $0.hasClass("bookmark-description") })?.textContent ?? ""
         var inlines: [MarkdownInline] = [.link(destination: href, label: [.text(title.isEmpty ? href : title)])]
         let sentence = NotionPageReader.firstSentence(of: description)
@@ -442,7 +441,7 @@ public struct NotionPageReader {
     }
 
     private static func firstSentence(of text: String) -> String {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = text.trimmingSpacesAndLineBreaks()
         var sentence = ""
         for character in trimmed {
             if character.isNewline { break }
@@ -493,7 +492,7 @@ public struct NotionPageReader {
         let code = pre.firstDescendant(where: { $0.tagName == "code" }) ?? pre
         let classAttribute = code.attributes["class"] ?? ""
         var language = ""
-        if let range = classAttribute.range(of: "language-") {
+        if let range = classAttribute.range(ofText: "language-") {
             language = NotionCallouts.codeLanguage(String(classAttribute[range.upperBound...]))
         }
         return .codeBlock(language: language, code: code.textContent)
@@ -531,11 +530,11 @@ public struct NotionPageReader {
             }
         }
         let name = holder?.firstDescendant(where: { $0.hasClass("collection-title") })?.textContent
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            .trimmingSpacesAndLineBreaks() ?? ""
         note(.simplified, "the database \(name.isEmpty ? "without a title" : "“\(name)”") is not in the export, so its table was written as a Markdown table")
         var result: [MarkdownBlock] = []
         if !name.isEmpty { result.append(.paragraph([.strong([.text(name)])])) }
-        let headerCells = table.descendants(where: { $0.tagName == "th" }).map { [MarkdownInline.text(textWithoutIcons($0).trimmingCharacters(in: .whitespacesAndNewlines))] }
+        let headerCells = table.descendants(where: { $0.tagName == "th" }).map { [MarkdownInline.text(textWithoutIcons($0).trimmingSpacesAndLineBreaks())] }
         let rows = table.descendants(where: { $0.tagName == "tr" && $0.parent?.tagName == "tbody" }).map { row in
             row.elementChildren.filter { $0.tagName == "td" }.map { cell in databaseCell(cell) }
         }
@@ -549,7 +548,7 @@ public struct NotionPageReader {
         }
         let values = cell.descendants(where: { $0.hasClass("selected-value") })
         if !values.isEmpty {
-            return [.text(values.map { $0.textContent.trimmingCharacters(in: .whitespacesAndNewlines) }.joined(separator: ", "))]
+            return [.text(values.map { $0.textContent.trimmingSpacesAndLineBreaks() }.joined(separator: ", "))]
         }
         return inlines(of: cell.children)
     }
@@ -558,7 +557,7 @@ public struct NotionPageReader {
         let headerCells = table.descendants(where: { $0.tagName == "th" })
         let columns = headerCells.map { cell -> NotionDatabaseTable.Column in
             let typeClass = cell.firstDescendant(where: { $0.tagName == "svg" })?.classes.first(where: { $0.hasPrefix("types") })
-            return NotionDatabaseTable.Column(name: textWithoutIcons(cell).trimmingCharacters(in: .whitespacesAndNewlines),
+            return NotionDatabaseTable.Column(name: textWithoutIcons(cell).trimmingSpacesAndLineBreaks(),
                                               notionType: typeClass.map(NotionPropertyReader.notionType(ofIconClass:)),
                                               isTitle: typeClass == "typesTitle")
         }
@@ -572,11 +571,11 @@ public struct NotionPageReader {
             }
             if let identifier = fromLink ?? row.attributes["id"].flatMap(NotionPageReader.hyphenatedIdentifier) {
                 identifiers.append(identifier)
-                titles.append(titleCell.map { textWithoutIcons($0).trimmingCharacters(in: .whitespacesAndNewlines) } ?? "")
+                titles.append(titleCell.map { textWithoutIcons($0).trimmingSpacesAndLineBreaks() } ?? "")
             }
         }
         var tableColumns = columns
-        if !tableColumns.contains(where: \.isTitle),
+        if !tableColumns.contains(where: { $0.isTitle }),
             let titleIndex = table.descendants(where: { $0.tagName == "tr" && $0.parent?.tagName == "tbody" }).first?
                 .elementChildren.firstIndex(where: { $0.hasClass("cell-title") }), titleIndex < tableColumns.count
         {
@@ -592,7 +591,7 @@ public struct NotionPageReader {
                 guard name.hasPrefix("table_of_contents-indent-") else { return nil }
                 return Int(name.dropFirst("table_of_contents-indent-".count))
             }.first ?? 0
-            let text = item.textContent.trimmingCharacters(in: .whitespacesAndNewlines)
+            let text = item.textContent.trimmingSpacesAndLineBreaks()
             guard !text.isEmpty else { continue }
             let link = MarkdownInline.wikiLink(target: "#" + NotionPageReader.headingLinkText(text), label: nil, isEmbed: false)
             entries.append((level, MarkdownListItem(blocks: [.paragraph([link])])))
@@ -668,7 +667,7 @@ public struct NotionPageReader {
             case "a":
                 result.append(contentsOf: link(node))
             case "time":
-                result.append(.text(node.textContent.replacingOccurrences(of: "@", with: "")))
+                result.append(.text(node.textContent.replacingEvery("@", with: "")))
             case "img":
                 if node.hasClass("icon") { continue }
                 if let source = node.attributes["src"] {
@@ -685,7 +684,7 @@ public struct NotionPageReader {
                     result.append(.math(node.firstDescendant(where: { $0.tagName == "annotation" })?.textContent ?? ""))
                 } else if node.hasClass("icon") {
                     continue
-                } else if (node.attributes["style"] ?? "").contains("border-bottom:0.05em solid") {
+                } else if (node.attributes["style"] ?? "").contains(text: "border-bottom:0.05em solid") {
                     result.append(.underline(inlines(of: node.children)))
                 } else {
                     result.append(contentsOf: inlines(of: node.children))
@@ -726,7 +725,7 @@ public struct NotionPageReader {
 
     private mutating func link(_ anchor: HTMLNode) -> [MarkdownInline] {
         let label = inlines(of: anchor.children)
-        let labelText = MarkdownInlineNormalizer.plainText(of: label).trimmingCharacters(in: .whitespacesAndNewlines)
+        let labelText = MarkdownInlineNormalizer.plainText(of: label).trimmingSpacesAndLineBreaks()
         guard let href = anchor.attributes["href"], !href.isEmpty else { return label }
         switch resolve(href: href) {
         case .page(let target, var heading):
@@ -800,7 +799,7 @@ public struct NotionPageReader {
         if lowered.hasPrefix("data:") {
             return .unresolved("an image held inside the page")
         }
-        if lowered.hasPrefix("mailto:") || lowered.hasPrefix("tel:") || href.contains("://") {
+        if lowered.hasPrefix("mailto:") || lowered.hasPrefix("tel:") || href.contains(text: "://") {
             return .external(href)
         }
         let withoutFragment = href.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false)
@@ -852,24 +851,24 @@ public struct NotionPageReader {
     }
 
     private func percentDecoded(_ text: String) -> String {
-        text.removingPercentEncoding ?? text
+        text.percentDecoded ?? text
     }
 
     /// The page and block identifiers of a Notion address: `https://www.notion.so/Title-<32 digits>?pvs=4#<32 digits>`.
     static func notionAddressIdentifiers(_ address: String) -> (page: String, block: String?)? {
-        guard let url = URL(string: address), let host = url.host?.lowercased(),
+        guard let address = WebAddress(address), case let host = address.host.lowercased(),
             host == "notion.so" || host.hasSuffix(".notion.so") || host.hasSuffix(".notion.site")
         else { return nil }
-        let last = url.path.split(separator: "/").last.map(String.init) ?? ""
+        let last = address.path.split(separator: "/").last.map(String.init) ?? ""
         let digits = String(last.suffix(32))
         guard let page = hyphenatedIdentifier(digits) else { return nil }
-        return (page, url.fragment.flatMap(hyphenatedIdentifier))
+        return (page, address.fragment.flatMap(hyphenatedIdentifier))
     }
 
     /// An identifier written with or without hyphens, as Notion's API writes it: lowercase, hyphenated.
     static func hyphenatedIdentifier(_ text: String) -> String? {
         let digits = text.lowercased().filter { $0 != "-" }
-        guard digits.count == 32, digits.allSatisfy(\.isHexDigit) else { return nil }
+        guard digits.count == 32, digits.allSatisfy({ $0.isHexDigit }) else { return nil }
         return NotionExportEntryName("x \(digits)")?.pageIdentifier
     }
 
@@ -877,7 +876,7 @@ public struct NotionPageReader {
 
     private mutating func readProperty(_ row: HTMLNode) -> NotionPropertyReader.Property? {
         guard let name = row.elementChildren.first(where: { $0.tagName == "th" }).map({ textWithoutIcons($0) })?
-            .trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty,
+            .trimmingSpacesAndLineBreaks(), !name.isEmpty,
             let cell = row.elementChildren.first(where: { $0.tagName == "td" })
         else { return nil }
         let notionType = row.classes.first(where: { $0.hasPrefix("property-row-") })
@@ -892,7 +891,7 @@ public struct NotionPageReader {
             case .external(let url):
                 return url
             case .heading, .unresolved:
-                return anchor.textContent.trimmingCharacters(in: .whitespacesAndNewlines)
+                return anchor.textContent.trimmingSpacesAndLineBreaks()
             }
         }
         var reader = NotionPropertyReader(dateParser: dateParser)
@@ -912,7 +911,7 @@ enum NotionCallouts {
             if let type = emojiTypes[base] { return type }
         }
         if let iconName {
-            for (fragment, type) in iconTypes where iconName.contains(fragment) { return type }
+            for (fragment, type) in iconTypes where iconName.contains(text: fragment) { return type }
         }
         return "note"
     }
@@ -920,7 +919,7 @@ enum NotionCallouts {
     /// The name of a Notion icon from its address: `https://www.notion.so/icons/info-alternate_green.svg` gives
     /// `info-alternate`.
     static func iconName(fromSource source: String) -> String? {
-        guard source.contains("notion.so/icons/") else { return nil }
+        guard source.contains(text: "notion.so/icons/") else { return nil }
         let file = source.split(separator: "/").last.map(String.init) ?? ""
         let stem = file.split(separator: ".").first.map(String.init) ?? file
         return stem.split(separator: "_").first.map(String.init)
@@ -943,7 +942,7 @@ enum NotionCallouts {
     /// A code block's language, from Notion's name for it (`Python`, `Plain Text`, `C++`) to the name Obsidian's
     /// highlighter knows (`python`, none, `cpp`).
     static func codeLanguage(_ notionName: String) -> String {
-        let name = notionName.trimmingCharacters(in: .whitespaces).lowercased()
+        let name = notionName.trimmingSpaces().lowercased()
         let names: [String: String] = [
             "plain text": "", "plain": "", "c++": "cpp", "c#": "csharp", "f#": "fsharp", "objective-c": "objectivec",
             "visual basic": "vb", "shell": "shell", "bash": "bash", "latex": "latex", "mermaid": "mermaid",
@@ -951,6 +950,6 @@ enum NotionCallouts {
             "vb.net": "vbnet", "webassembly": "wasm", "docker": "docker", "makefile": "makefile",
         ]
         if let mapped = names[name] { return mapped }
-        return name.replacingOccurrences(of: " ", with: "")
+        return name.replacingEvery(" ", with: "")
     }
 }

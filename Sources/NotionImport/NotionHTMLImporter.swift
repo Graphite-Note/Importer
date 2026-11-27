@@ -7,11 +7,10 @@
  *              attachments in pieces, assigns the property types and writes the import report.
  *
  * Authors: Bahey Shalash
- * Version: 0.1
- * Date: 26/11/2026
+ * Version: 0.2
+ * Date: 27/11/2026
  */
 
-import Foundation
 import ImporterCore
 
 /// Why an export cannot be imported at all.
@@ -104,7 +103,7 @@ public enum NotionHTMLImporter {
                 for date in summary.propertyDates { dateParser.observe(date) }
                 summaries[page.identifier] = summary
             } catch {
-                report.record(.failed, at: nil, "\(page.file.origin) could not be read: \(error).")
+                report.record(.failed, at: nil, "\(page.file.origin) could not be read: \(ImportReport.text(describing: error)).")
             }
             if Task.isCancelled { break }
         }
@@ -159,12 +158,12 @@ public enum NotionHTMLImporter {
                                         assignType: { name, type, path, report in assign(name, type, at: path, report: &report) })
                 } else {
                     let contents = read.frontMatter.yaml + MarkdownWriter.markdown(for: read.blocks)
-                    try await destination.writeNewFile(Data(contents.utf8), at: placement.path)
+                    try await destination.writeNewFile(Array(contents.utf8), at: placement.path)
                     report.recordWritten(.note, at: placement.path)
                     for (name, type) in read.propertyTypes { assign(name, type, at: placement.path, report: &report) }
                 }
             } catch {
-                report.record(.failed, at: placement.path, "\(page.file.origin) could not be imported: \(error).")
+                report.record(.failed, at: placement.path, "\(page.file.origin) could not be imported: \(ImportReport.text(describing: error)).")
             }
         }
 
@@ -184,7 +183,7 @@ public enum NotionHTMLImporter {
                 try await writer.close()
                 report.recordWritten(.attachment, at: path)
             } catch {
-                report.record(.failed, at: path, "\(attachment.origin) could not be copied: \(error).")
+                report.record(.failed, at: path, "\(attachment.origin) could not be copied: \(ImportReport.text(describing: error)).")
             }
         }
 
@@ -195,13 +194,13 @@ public enum NotionHTMLImporter {
                     report.record(.simplified, at: nil, "the property “\(name)” already has another type in this vault, which it keeps")
                 }
             } catch {
-                report.record(.failed, at: nil, "the property types could not be written: \(error).")
+                report.record(.failed, at: nil, "the property types could not be written: \(ImportReport.text(describing: error)).")
             }
         }
         if wasCancelled {
             report.record(.leftOut, at: nil, "the import was stopped before its end: the pages and attachments not listed here were not imported.")
         }
-        try await destination.writeNewFile(Data(report.markdown.utf8), at: reportPath)
+        try await destination.writeNewFile(Array(report.markdown.utf8), at: reportPath)
         return NotionHTMLImportResult(report: report, reportPath: reportPath, propertyTypes: propertyTypes,
                                       wasCancelled: wasCancelled)
     }
@@ -223,7 +222,7 @@ public enum NotionHTMLImporter {
             order.append(name)
         }
         let base = BaseFile(folder: rowsFolder, displayNames: displayNames, views: [BaseFile.View(type: "table", name: "Table", order: order)])
-        try await destination.writeNewFile(Data(base.yaml.utf8), at: placement.path)
+        try await destination.writeNewFile(Array(base.yaml.utf8), at: placement.path)
         report.recordWritten(.base, at: placement.path)
         if !MarkdownInlineNormalizer.isBlank(page.blocks.flatMap { block -> [MarkdownInline] in
             if case .paragraph(let inlines) = block { return inlines }
@@ -235,10 +234,10 @@ public enum NotionHTMLImporter {
         // Rows the table lists whose page the export lacks, read from the database's CSV.
         guard let csvFile = export.csvFiles[page.identifier ?? ""] else { return }
         let table = CSVTable(String(decoding: try await csvFile.contents(), as: UTF8.self))
-        guard let titleColumn = database.columns.first(where: \.isTitle)?.name ?? table.header.first else { return }
+        guard let titleColumn = database.columns.first(where: { $0.isTitle })?.name ?? table.header.first else { return }
         var pageTitles = Dictionary(grouping: database.rowPageIdentifiers.compactMap { identifier in
             plan.placement(ofPage: identifier) != nil ? plan.title(ofPage: identifier) : nil
-        }, by: { $0 }).mapValues(\.count)
+        }, by: { $0 }).mapValues({ $0.count })
         var columnTypes: [String: String] = [:]
         for column in database.columns { columnTypes[column.name] = column.notionType }
         for row in table.rows {
@@ -249,13 +248,13 @@ public enum NotionHTMLImporter {
             }
             var frontMatter = FrontMatter()
             for column in table.header where column != titleColumn {
-                let text = table.value(column, in: row).trimmingCharacters(in: .whitespacesAndNewlines)
+                let text = table.value(column, in: row).trimmingSpacesAndLineBreaks()
                 guard let (name, value, type) = csvProperty(column, text: text, notionType: columnTypes[column], dateParser: dateParser) else { continue }
                 frontMatter.set(name, to: value)
                 assignType(name, type, rowsFolder, &report)
             }
             let path = plan.claimNote(titled: title, in: rowsFolder)
-            try await destination.writeNewFile(Data(frontMatter.yaml.utf8), at: path)
+            try await destination.writeNewFile(Array(frontMatter.yaml.utf8), at: path)
             report.recordWritten(.note, at: path)
             report.record(.simplified, at: path, "this row has no page in the export, so it was made from the database's CSV, with its properties only")
         }
@@ -276,9 +275,9 @@ public enum NotionHTMLImporter {
             }
             return (column, .text(text), .date)
         case "multi_select"?:
-            let values = text.components(separatedBy: ", ").filter { !$0.isEmpty }
+            let values = text.pieces(separatedBy: ", ").filter { !$0.isEmpty }
             if column.lowercased() == "tags" {
-                return ("tags", .list(values.map { $0.replacingOccurrences(of: " ", with: "-") }), .tags)
+                return ("tags", .list(values.map { $0.replacingEvery(" ", with: "-") }), .tags)
             }
             return (column, .list(values), .multitext)
         default:
@@ -297,7 +296,7 @@ struct NotionPageSummary: Sendable {
 
     /// The identifier of the page an HTML file holds, from its `article` element, `nil` when it holds no Notion page.
     static func pageIdentifier(in html: String) -> String? {
-        guard let start = html.range(of: "<article id=\""), html.contains("class=\"page-body\""),
+        guard let start = html.range(ofText: "<article id=\""), html.contains(text: "class=\"page-body\""),
             let end = html[start.upperBound...].firstIndex(of: "\"")
         else { return nil }
         return NotionPageReader.hyphenatedIdentifier(String(html[start.upperBound..<end]))
@@ -305,36 +304,36 @@ struct NotionPageSummary: Sendable {
 
     init(html: String, titleFromName: String) {
         let title = NotionPageSummary.text(between: "<title>", and: "</title>", in: html).map {
-            HTMLCharacterReferences.decode($0).trimmingCharacters(in: .whitespacesAndNewlines)
+            HTMLCharacterReferences.decode($0).trimmingSpacesAndLineBreaks()
         } ?? ""
         self.title = title.isEmpty ? titleFromName : title
-        isDatabase = html.contains("<div class=\"page-body\"><table class=\"collection-content\">")
+        isDatabase = html.contains(text: "<div class=\"page-body\"><table class=\"collection-content\">")
         var headings: [String: String] = [:]
         for level in 1...3 {
             var searchStart = html.startIndex
             let opening = "<h\(level) id=\""
-            while let range = html.range(of: opening, range: searchStart..<html.endIndex) {
+            while let range = html.range(ofText: opening, in: searchStart..<html.endIndex) {
                 guard let quote = html[range.upperBound...].firstIndex(of: "\""),
                     let tagEnd = html[quote...].firstIndex(of: ">"),
-                    let close = html.range(of: "</h\(level)>", range: tagEnd..<html.endIndex)
+                    let close = html.range(ofText: "</h\(level)>", in: tagEnd..<html.endIndex)
                 else { break }
                 let identifier = NotionPageReader.hyphenatedIdentifier(String(html[range.upperBound..<quote]))
                 let inner = String(html[html.index(after: tagEnd)..<close.lowerBound])
                 if let identifier {
-                    headings[identifier] = HTMLDocument(inner).root.textContent.trimmingCharacters(in: .whitespacesAndNewlines)
+                    headings[identifier] = HTMLDocument(inner).root.textContent.trimmingSpacesAndLineBreaks()
                 }
                 searchStart = close.upperBound
             }
         }
         headingTextByBlock = headings
         var dates: [String] = []
-        if let properties = html.range(of: "<table class=\"properties\">"),
-            let end = html.range(of: "</table>", range: properties.upperBound..<html.endIndex)
+        if let properties = html.range(ofText: "<table class=\"properties\">"),
+            let end = html.range(ofText: "</table>", in: properties.upperBound..<html.endIndex)
         {
             let table = html[properties.upperBound..<end.lowerBound]
             var searchStart = table.startIndex
-            while let open = table.range(of: "<time>", range: searchStart..<table.endIndex),
-                let close = table.range(of: "</time>", range: open.upperBound..<table.endIndex)
+            while let open = table.range(ofText: "<time>", in: searchStart..<table.endIndex),
+                let close = table.range(ofText: "</time>", in: open.upperBound..<table.endIndex)
             {
                 dates.append(HTMLCharacterReferences.decode(String(table[open.upperBound..<close.lowerBound])))
                 searchStart = close.upperBound
@@ -344,7 +343,7 @@ struct NotionPageSummary: Sendable {
     }
 
     private static func text(between opening: String, and closing: String, in html: String) -> String? {
-        guard let start = html.range(of: opening), let end = html.range(of: closing, range: start.upperBound..<html.endIndex) else {
+        guard let start = html.range(ofText: opening), let end = html.range(ofText: closing, in: start.upperBound..<html.endIndex) else {
             return nil
         }
         return String(html[start.upperBound..<end.lowerBound])

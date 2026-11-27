@@ -1,16 +1,17 @@
 /**
  * File: FolderImportDestination.swift
  * -----------------------------------
- * Layer: Core
+ * Layer: File system
  * Description: An import destination that is a folder on disk, written with plain file operations, for tests, tools
  *              and hosts that need no coordination of their writes.
  *
  * Authors: Bahey Shalash
- * Version: 0.2
- * Date: 26/11/2026
+ * Version: 0.3
+ * Date: 27/11/2026
  */
 
 import Foundation
+import ImporterCore
 
 /// A vault that is a folder on disk, written to directly.
 public struct FolderImportDestination: ImportDestination {
@@ -28,12 +29,12 @@ public struct FolderImportDestination: ImportDestination {
         try FileManager.default.createDirectory(at: url(of: path), withIntermediateDirectories: true)
     }
 
-    public func writeNewFile(_ contents: Data, at path: VaultPath) async throws {
+    public func writeNewFile(_ contents: [UInt8], at path: VaultPath) async throws {
         let fileURL = url(of: path)
         if FileManager.default.fileExists(atPath: fileURL.path) {
             throw ImportDestinationError.fileAlreadyExists(path)
         }
-        try contents.write(to: fileURL, options: .withoutOverwriting)
+        try Data(contents).write(to: fileURL, options: .withoutOverwriting)
     }
 
     public func createNewFile(at path: VaultPath) async throws -> any ImportFileWriting {
@@ -47,10 +48,8 @@ public struct FolderImportDestination: ImportDestination {
 
     public func names(inFolderAt path: VaultPath) async throws -> [String] {
         let folderURL = url(of: path)
-        var isFolder: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: folderURL.path, isDirectory: &isFolder), isFolder.boolValue else {
-            return []
-        }
+        // A missing folder, or a file in its place, has no names in it.
+        guard (try? folderURL.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true else { return [] }
         return try FileManager.default.contentsOfDirectory(atPath: folderURL.path)
     }
 
@@ -103,7 +102,7 @@ actor FolderImportFileWriter: ImportFileWriting {
         handle = try FileHandle(forWritingTo: url)
     }
 
-    func append(_ bytes: Data) throws {
+    func append(_ bytes: [UInt8]) throws {
         try handle.write(contentsOf: bytes)
     }
 

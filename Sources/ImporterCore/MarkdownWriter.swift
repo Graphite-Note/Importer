@@ -7,11 +7,9 @@
  *              and nested lists in the form Obsidian and Graphite read.
  *
  * Authors: Bahey Shalash
- * Version: 0.1
- * Date: 26/11/2026
+ * Version: 0.2
+ * Date: 27/11/2026
  */
-
-import Foundation
 
 /// Obsidian Markdown written from blocks.
 ///
@@ -149,7 +147,7 @@ public enum MarkdownWriter {
     // MARK: Tables
 
     private static func renderTable(header: [[MarkdownInline]], rows: [[[MarkdownInline]]]) -> String? {
-        let columnCount = max(header.count, rows.map(\.count).max() ?? 0)
+        let columnCount = max(header.count, rows.map({ $0.count }).max() ?? 0)
         guard columnCount > 0 else { return nil }
         let context = InlineContext(lineBreak: "<br>", isInTableCell: true)
         func line(_ cells: [[MarkdownInline]]) -> String {
@@ -205,19 +203,19 @@ public enum MarkdownWriter {
         case .underline(let children):
             return wrap(children, opening: "<u>", closing: "</u>", context: context)
         case .code(let code):
-            let flat = code.replacingOccurrences(of: "\n", with: " ")
+            let flat = code.replacingEvery("\n", with: " ")
             guard !flat.isEmpty else { return "" }
             let fence = String(repeating: "`", count: longestRun(of: "`", in: flat) + 1)
             let padding = flat.hasPrefix("`") || flat.hasSuffix("`") ? " " : ""
-            let escaped = context.isInTableCell ? flat.replacingOccurrences(of: "|", with: "\\|") : flat
+            let escaped = context.isInTableCell ? flat.replacingEvery("|", with: "\\|") : flat
             return fence + padding + escaped + padding + fence
         case .math(let tex):
             let cleaned = cleanedTeX(tex, isInline: true)
             guard !cleaned.isEmpty else { return "" }
-            return "$" + (context.isInTableCell ? cleaned.replacingOccurrences(of: "|", with: "\\|") : cleaned) + "$"
+            return "$" + (context.isInTableCell ? cleaned.replacingEvery("|", with: "\\|") : cleaned) + "$"
         case .link(let destination, let label):
             let labelText = trimmed(renderInlines(MarkdownInlineNormalizer.normalize(label), context: context))
-            let plainLabel = MarkdownInlineNormalizer.plainText(of: label).trimmingCharacters(in: .whitespaces)
+            let plainLabel = MarkdownInlineNormalizer.plainText(of: label).trimmingSpaces()
             let isWebAddress = destination.hasPrefix("http://") || destination.hasPrefix("https://")
             if labelText.isEmpty || (isWebAddress && plainLabel == destination) {
                 return isWebAddress ? destination : "<\(destination)>"
@@ -227,13 +225,13 @@ public enum MarkdownWriter {
             var text = isEmbed ? "![[" : "[["
             text += target
             if let label, !label.isEmpty, label != target {
-                let cleanedLabel = label.replacingOccurrences(of: "[", with: "").replacingOccurrences(of: "]", with: "")
-                    .replacingOccurrences(of: "|", with: "")
+                let cleanedLabel = label.replacingEvery("[", with: "").replacingEvery("]", with: "")
+                    .replacingEvery("|", with: "")
                 text += (context.isInTableCell ? "\\|" : "|") + cleanedLabel
             }
             return text + "]]"
         case .image(let source, let alternativeText):
-            let alternative = alternativeText.replacingOccurrences(of: "[", with: "").replacingOccurrences(of: "]", with: "")
+            let alternative = alternativeText.replacingEvery("[", with: "").replacingEvery("]", with: "")
             return "![" + alternative + "](" + linkDestination(source) + ")"
         case .lineBreak:
             return context.lineBreak
@@ -253,7 +251,7 @@ public enum MarkdownWriter {
 
     private static func linkDestination(_ destination: String) -> String {
         if destination.contains(where: { $0 == " " || $0 == "(" || $0 == ")" || $0 == "<" || $0 == ">" }) {
-            return "<" + destination.replacingOccurrences(of: "<", with: "%3C").replacingOccurrences(of: ">", with: "%3E") + ">"
+            return "<" + destination.replacingEvery("<", with: "%3C").replacingEvery(">", with: "%3E") + ">"
         }
         return destination
     }
@@ -359,12 +357,12 @@ public enum MarkdownWriter {
         while let last = scalars.last, last.isWhitespace || last == "\\" { scalars = scalars.dropLast() }
         let lines = scalars.split(whereSeparator: { $0.isNewline }).map { line in
             String(line.reversed().drop(while: { $0 == " " || $0 == "\t" }).reversed())
-        }.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+        }.filter { !$0.trimmingSpaces().isEmpty }
         return lines.joined(separator: isInline ? " " : "\n")
     }
 
     private static func trimmed(_ text: String) -> String {
-        text.trimmingCharacters(in: .whitespaces)
+        text.trimmingSpaces()
     }
 
     private static func longestRun(of character: Character, in text: String) -> Int {
@@ -503,7 +501,7 @@ public enum MarkdownInlineNormalizer {
     public static func isBlank(_ inlines: [MarkdownInline]) -> Bool {
         inlines.allSatisfy { inline in
             switch inline {
-            case .text(let text): return text.allSatisfy(\.isWhitespace)
+            case .text(let text): return text.allSatisfy({ $0.isWhitespace })
             case .lineBreak: return true
             case .strong(let children), .emphasis(let children), .strikethrough(let children), .highlight(let children),
                 .underline(let children):

@@ -6,11 +6,9 @@
  *              it names and its views, written as the YAML Obsidian and Graphite read.
  *
  * Authors: Bahey Shalash
- * Version: 0.1
- * Date: 26/11/2026
+ * Version: 0.2
+ * Date: 27/11/2026
  */
-
-import Foundation
 
 /// A base showing the notes of one folder.
 public struct BaseFile: Equatable, Sendable {
@@ -51,7 +49,7 @@ public struct BaseFile: Equatable, Sendable {
     /// The `.base` file's YAML.
     public var yaml: String {
         var lines: [String] = []
-        let folderPath = folder.description.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+        let folderPath = folder.description.replacingEvery("\\", with: "\\\\").replacingEvery("\"", with: "\\\"")
         lines.append("filters: " + YAMLScalar.quotedIfNeeded("file.folder == \"\(folderPath)\""))
         if !displayNames.isEmpty {
             lines.append("properties:")

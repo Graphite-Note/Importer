@@ -2,11 +2,13 @@
 # ---------------
 # Layer: Build
 # Description: Runs the tests on macOS and Linux for every push and pull request, and builds the library targets
-#              with the Swift SDK for WebAssembly, so that nothing Apple-only enters them.
+#              with the Swift SDK for WebAssembly, so that nothing Apple-only enters them. The importers are checked
+#              to use the standard library alone, and the plugin's module, built with Embedded Swift and with the
+#              standard library, must import the test exports as the package linked natively does.
 #
 # Authors: Bahey Shalash
-# Version: 0.1
-# Date: 26/11/2026
+# Version: 0.3
+# Date: 27/11/2026
 
 name: Tests
 
@@ -53,6 +55,15 @@ jobs:
       WEBASSEMBLY_SDK_CHECKSUM: 83baca83553f8c443cda7b84800912e6e709c3acd2e7ebf277794ca5836c0da5
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: The importers use the standard library alone
+        run: |
+          if grep -rnE "^(@_exported )?import (Foundation|FoundationEssentials)" Sources/ImporterCore Sources/NotionImport; then
+            echo "ImporterCore and NotionImport must not import Foundation: the plugin's module is built without it."
+            exit 1
+          fi
       - name: Install the Swift SDK for WebAssembly
         run: |
           swift sdk install "$WEBASSEMBLY_SDK_URL" --checksum "$WEBASSEMBLY_SDK_CHECKSUM"
@@ -61,3 +72,21 @@ jobs:
         run: |
           swift build --swift-sdk swift-6.4.2-RELEASE_wasm --target ImporterCore
           swift build --swift-sdk swift-6.4.2-RELEASE_wasm --target NotionImport
+      - name: Build the plugin's module with Embedded Swift and with the standard library
+        run: |
+          Plugin/build-module.sh embedded "$RUNNER_TEMP/importer-embedded.wasm"
+          Plugin/build-module.sh standard-library "$RUNNER_TEMP/importer-standard-library.wasm"
+      - name: The plugin's main.js is assembled and parses
+        run: |
+          node Plugin/assemble-main.mjs "$RUNNER_TEMP/importer-embedded.wasm" "$RUNNER_TEMP/main.js"
+          node --check "$RUNNER_TEMP/main.js"
+      - name: The plugin says so where its web view runs no WebAssembly
+        run: node --test Plugin/tests/*.test.cjs
+      - name: The plugin's module imports the test exports as the linked package does
+        run: |
+          swift build --product importer
+          for module in importer-embedded importer-standard-library; do
+            mkdir -p "$RUNNER_TEMP/$module"
+            Plugin/tests/compare-with-linked.sh "$(swift build --show-bin-path)/importer" "$RUNNER_TEMP/$module.wasm" \
+              "$RUNNER_TEMP/$module" Tests/Fixtures/Notion/notion-testspace.zip Tests/Fixtures/Notion/Notion.Test.Export.zip
+          done

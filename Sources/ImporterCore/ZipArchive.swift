@@ -6,11 +6,9 @@
  *              own, stored or deflated, checked against its CRC-32, with zip64 for archives and entries over 4 GB.
  *
  * Authors: Bahey Shalash
- * Version: 0.1
- * Date: 26/11/2026
+ * Version: 0.2
+ * Date: 27/11/2026
  */
-
-import Foundation
 
 /// Why a zip archive or one of its entries could not be read.
 public enum ZipArchiveError: Error, Equatable, Sendable {
@@ -83,7 +81,7 @@ public struct ZipArchive: Sendable {
         else {
             throw ZipArchiveError.damagedArchive("the central directory lies outside the archive")
         }
-        let bytes = ByteReader(try await source.readExactly(at: directory.offset, count: Int(directory.size)))
+        let bytes = ByteReader(try await readExactly(from: source, at: directory.offset, count: Int(directory.size)))
         var entries: [Entry] = []
         entries.reserveCapacity(Int(min(directory.entryCount, 1_000_000)))
         while entries.count < directory.entryCount {
@@ -109,7 +107,7 @@ public struct ZipArchive: Sendable {
         let tailCount = Int(min(source.size, 22 + 65_535))
         guard tailCount >= 22 else { throw ZipArchiveError.notAZipArchive }
         let tailStart = source.size - UInt64(tailCount)
-        let tail = ByteReader(try await source.readExactly(at: tailStart, count: tailCount))
+        let tail = ByteReader(try await readExactly(from: source, at: tailStart, count: tailCount))
         var recordStart: Int?
         var position = tailCount - 22
         while position >= 0 {
@@ -132,7 +130,7 @@ public struct ZipArchive: Sendable {
             guard zip64RecordOffset <= source.size, source.size - zip64RecordOffset >= 56 else {
                 throw ZipArchiveError.damagedArchive("the zip64 end record lies outside the archive")
             }
-            let record = ByteReader(try await source.readExactly(at: zip64RecordOffset, count: 56))
+            let record = ByteReader(try await readExactly(from: source, at: zip64RecordOffset, count: 56))
             guard record.uint32(at: 0) == zip64EndOfCentralDirectorySignature else {
                 throw ZipArchiveError.damagedArchive("the zip64 end record is missing")
             }
@@ -202,7 +200,7 @@ public struct ZipArchive: Sendable {
 
     /// A name as UTF-8 when it reads as UTF-8 (many archivers write UTF-8 without setting its flag), else as code
     /// page 437, the encoding zip names have without the flag.
-    static func decodeName(_ bytes: Data, isUTF8: Bool) -> String {
+    static func decodeName(_ bytes: [UInt8], isUTF8: Bool) -> String {
         if let name = String(validating: bytes, as: UTF8.self) { return name }
         if isUTF8 { return String(decoding: bytes, as: UTF8.self) }
         return String(String.UnicodeScalarView(bytes.map { byte in
@@ -225,7 +223,7 @@ public struct ZipArchive: Sendable {
         guard entry.localHeaderOffset <= source.size, source.size - entry.localHeaderOffset >= 30 else {
             throw ZipArchiveError.damagedArchive("the local header of \(entry.path) lies outside the archive")
         }
-        let header = ByteReader(try await source.readExactly(at: entry.localHeaderOffset, count: 30))
+        let header = ByteReader(try await readExactly(from: source, at: entry.localHeaderOffset, count: 30))
         guard header.uint32(at: 0) == ZipArchive.localHeaderSignature else {
             throw ZipArchiveError.damagedArchive("the local header of \(entry.path) is missing")
         }
@@ -237,15 +235,15 @@ public struct ZipArchive: Sendable {
     }
 
     /// All of `entry`'s decoded bytes, refused when it holds more than `maximumSize` bytes.
-    public func contents(of entry: Entry, maximumSize: UInt64 = 256 * 1024 * 1024) async throws -> Data {
+    public func contents(of entry: Entry, maximumSize: UInt64 = 256 * 1024 * 1024) async throws -> [UInt8] {
         guard entry.uncompressedSize <= maximumSize else {
             throw ZipArchiveError.entryTooLarge(entry: entry.path, size: entry.uncompressedSize)
         }
         var reader = try await reader(for: entry)
-        var contents = Data()
+        var contents: [UInt8] = []
         contents.reserveCapacity(Int(entry.uncompressedSize))
         while let piece = try await reader.read() {
-            contents.append(piece)
+            contents.append(contentsOf: piece)
         }
         return contents
     }
@@ -274,7 +272,7 @@ public struct ZipEntryReader: Sendable {
     }
 
     /// The next decoded piece, `nil` once the entry is read whole and checked.
-    public mutating func read() async throws -> Data? {
+    public mutating func read() async throws -> [UInt8]? {
         guard !isDone else { return nil }
         while true {
             let piece: [UInt8]
@@ -299,7 +297,7 @@ public struct ZipEntryReader: Sendable {
                 guard decodedByteCount <= entry.uncompressedSize else {
                     throw ZipArchiveError.checksumMismatch(entry.path)
                 }
-                return Data(piece)
+                return piece
             }
             let isComplete = entry.compressionMethod == 0 ? compressedBytesRead == entry.compressedSize : inflater.isFinished
             guard isComplete, decodedByteCount == entry.uncompressedSize, checksum.value == entry.checksum else {
@@ -313,9 +311,9 @@ public struct ZipEntryReader: Sendable {
     private mutating func readCompressed() async throws -> [UInt8] {
         let count = Int(min(UInt64(ZipEntryReader.pieceSize), entry.compressedSize - compressedBytesRead))
         guard count > 0 else { return [] }
-        let bytes = try await source.readExactly(at: dataOffset + compressedBytesRead, count: count)
+        let bytes = try await readExactly(from: source, at: dataOffset + compressedBytesRead, count: count)
         compressedBytesRead += UInt64(bytes.count)
-        return [UInt8](bytes)
+        return bytes
     }
 }
 
@@ -324,8 +322,8 @@ final class ByteReader {
     private let bytes: [UInt8]
     var position = 0
 
-    init(_ data: Data) {
-        bytes = [UInt8](data)
+    init(_ bytes: [UInt8]) {
+        self.bytes = bytes
     }
 
     var remainingCount: Int {
@@ -347,8 +345,8 @@ final class ByteReader {
         return UInt64(uint32(at: offset)) | UInt64(uint32(at: offset + 4)) << 32
     }
 
-    func slice(at offset: Int, count: Int) -> Data {
-        guard offset >= 0, count >= 0, offset + count <= bytes.count else { return Data() }
-        return Data(bytes[offset..<(offset + count)])
+    func slice(at offset: Int, count: Int) -> [UInt8] {
+        guard offset >= 0, count >= 0, offset + count <= bytes.count else { return [] }
+        return Array(bytes[offset..<(offset + count)])
     }
 }

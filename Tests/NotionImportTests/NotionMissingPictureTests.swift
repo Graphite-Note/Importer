@@ -12,6 +12,7 @@
 
 import Foundation
 import ImporterCore
+import ImporterFileSystem
 import ImporterTestSupport
 @testable import NotionImport
 import Testing
@@ -36,7 +37,7 @@ struct NotionMissingPictureTests {
             .stored("Export/Shapes \(Self.identifier).html", text: html),
             .stored("Export/Shapes \(Self.identifier)/Untitled.png", Data([0x89, 0x50, 0x4E, 0x47])),
         ]).data
-        let tree = try await ExportFileTree.reading(zipArchives: [DataRandomAccessSource(export)], named: ["Export.zip"],
+        let tree = try await ExportFileTree.reading(zipArchives: [MemoryRandomAccessSource(Array(export))], named: ["Export.zip"],
                                                     temporaryStorage: MemoryTemporaryStorage())
         let vault = try TemporaryVault()
         defer { vault.remove() }
@@ -65,7 +66,7 @@ struct NotionMissingPictureTests {
             .stored("Export/Run тАЬBlueтАЭ \(Self.identifier).html", text: html),
             .stored("Export/Run тАЬBlueтАЭ \(Self.identifier)/shoe.jpg", Data([0xFF, 0xD8, 0xFF])),
         ]).data
-        let tree = try await ExportFileTree.reading(zipArchives: [DataRandomAccessSource(export)], named: ["Export.zip"],
+        let tree = try await ExportFileTree.reading(zipArchives: [MemoryRandomAccessSource(Array(export))], named: ["Export.zip"],
                                                     temporaryStorage: MemoryTemporaryStorage())
         let vault = try TemporaryVault()
         defer { vault.remove() }

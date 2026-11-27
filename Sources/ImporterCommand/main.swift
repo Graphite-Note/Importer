@@ -6,12 +6,13 @@
  *              zip, several parts or an unpacked folder, into a vault folder on disk, and prints the report.
  *
  * Authors: Bahey Shalash
- * Version: 0.1
- * Date: 26/11/2026
+ * Version: 0.2
+ * Date: 27/11/2026
  */
 
 import Foundation
 import ImporterCore
+import ImporterFileSystem
 import NotionImport
 
 let usage = """
