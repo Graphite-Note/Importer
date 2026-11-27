@@ -8,8 +8,8 @@
  *              link resolved by page identifier.
  *
  * Authors: Bahey Shalash
- * Version: 0.1
- * Date: 26/11/2026
+ * Version: 0.2
+ * Date: 27/11/2026
  */
 
 import Foundation
@@ -460,7 +460,17 @@ public struct NotionPageReader {
         if let target = attachmentTarget(forHref: source) ?? link.flatMap({ attachmentTarget(forHref: $0) }) {
             return [.paragraph([.wikiLink(target: target, label: nil, isEmbed: true)])]
         }
+        if let name = missingPicture(source) { return [.paragraph([.text(name)])] }
         return [.paragraph([.image(source: source, alternativeText: image.attributes["alt"] ?? "")])]
+    }
+
+    /// The name of a picture the page shows from a file of the export that the export does not hold, with a finding.
+    /// An embed of it would show nothing, and a Markdown image pointing at it would be a link to nothing, so its name is
+    /// kept as text. A picture from the web or held inside the page is not missing: `nil`.
+    private mutating func missingPicture(_ source: String) -> String? {
+        guard !source.lowercased().hasPrefix("data:"), case .unresolved(let name) = resolve(href: source) else { return nil }
+        note(.leftOut, "a picture, \(name), which the export does not hold, was kept as its name")
+        return name
     }
 
     private mutating func embedOrLink(_ href: String) -> MarkdownBlock {
@@ -664,6 +674,8 @@ public struct NotionPageReader {
                 if let source = node.attributes["src"] {
                     if let target = attachmentTarget(forHref: source) {
                         result.append(.wikiLink(target: target, label: nil, isEmbed: true))
+                    } else if let name = missingPicture(source) {
+                        result.append(.text(name))
                     } else {
                         result.append(.image(source: source, alternativeText: node.attributes["alt"] ?? ""))
                     }
