@@ -139,6 +139,9 @@ struct NotionVaultPlan: NotionLinkResolving, Sendable {
     private var pageIdentifiers: [String: String] = [:]
     private var headings: [String: [String: String]] = [:]
     private var attachmentPaths: [String: VaultPath] = [:]
+    /// The attachments by the identifier of the innermost page folder holding them and their path from there, `nil`
+    /// for a key two attachments share: for links whose folder names differ from the export's own.
+    private var attachmentPathsByPage: [String: VaultPath?] = [:]
     private var linkTargets: [VaultPath: String] = [:]
     private var folderNames: [VaultPath: VaultFolderNames] = [:]
 
@@ -198,6 +201,9 @@ struct NotionVaultPlan: NotionLinkResolving, Sendable {
                 let name = names.claim(stem: stem, pathExtension: pathExtension)
                 if let path = vaultFolder.appending(name) {
                     attachmentPaths[NotionVaultPlan.key(attachment.pathComponents)] = path
+                    if let key = NotionVaultPlan.pageKey(attachment.pathComponents) {
+                        attachmentPathsByPage[key] = attachmentPathsByPage[key] == nil ? path : .some(nil)
+                    }
                 }
             }
             folderNames[vaultFolder] = names
@@ -233,6 +239,15 @@ struct NotionVaultPlan: NotionLinkResolving, Sendable {
 
     private static func key(_ components: [String]) -> String {
         components.joined(separator: "/")
+    }
+
+    /// The identifier of the innermost folder of `components` named after a page, followed by the path from it.
+    private static func pageKey(_ components: [String]) -> String? {
+        let folders = components.dropLast()
+        guard let index = folders.lastIndex(where: { NotionExportEntryName($0).map { $0.pathExtension == nil } ?? false }),
+            let name = NotionExportEntryName(components[index])
+        else { return nil }
+        return ([name.pageIdentifier] + components[(index + 1)...]).joined(separator: "/")
     }
 
     /// The name an attachment is copied under: Notion's name, with the percent escapes some names keep decoded,
@@ -298,6 +313,13 @@ struct NotionVaultPlan: NotionLinkResolving, Sendable {
         // Some links are escaped twice.
         let decoded = exportPath.map { $0.percentDecoded ?? $0 }
         if let path = attachmentPaths[NotionVaultPlan.key(decoded)] { return linkTargets[path] }
+        // Some exports were unpacked with another encoding, so their folder names no longer match their links: the
+        // page identifier ending each folder name still does.
+        for components in [exportPath, decoded] {
+            if let key = NotionVaultPlan.pageKey(components), case .some(.some(let path)) = attachmentPathsByPage[key] {
+                return linkTargets[path]
+            }
+        }
         return nil
     }
 
