@@ -7,7 +7,7 @@ Description: How the Importer is built: its layers, what the host provides, how 
              Importer.
 
 Authors: Bahey Shalash
-Version: 0.3
+Version: 0.4
 Date: 27/11/2026
 -->
 
@@ -71,7 +71,16 @@ The import report lists every note, base and attachment written, and what was si
 
 ### From the API
 
-An internal integration's token (`ntn_…`), kept in the Keychain, never in a file or a log. Requests keep to Notion's limit of 3 a second, back off on 429 and 5xx, and resume after a lost network. Attachments are downloaded while their page is converted, as Notion's file links expire after about an hour.
+An internal integration's token (`ntn_…`), kept by the host (the Keychain in Graphite), never seen by the importer: the host's transport adds it to requests marked for Notion's API, and never to a file's address. Requests keep to Notion's limit of 3 a second after a burst of 10, wait as long as a 429's `Retry-After` says, and wait longer each time on a 5xx or a lost network, for up to 15 minutes before giving up (`NotionAPIClient`, Notion-Version `2025-09-03`, with data sources). Its JSON is read by `JSONValue`, standard library only.
+
+- Discovery: `POST /v1/search` lists the pages and data sources shared with the integration, `GET /v1/databases/{id}` each database. Pages nest as in Notion, a page inside a block going up to the page that holds the block. A chosen page or database takes everything inside it.
+- Pages (`NotionAPIPageReader`): blocks read page by page with their children into the same Markdown model as the HTML export, so notes are written the same way: rich text with its marks, links and mentions, lists and to-dos, toggles as folded callouts, toggle headings as headings, callouts by icon, code, math, tables, bookmarks, files, child pages and databases as links and embeds, synced blocks copied, columns flattened, a table of contents from the page's headings, AI meeting notes with their summary, notes and transcript. Each note has `notion-id`.
+- Databases (`NotionAPIBaseWriter`): one base per database over its rows' folder, with the first data source's properties. Table, board, gallery and list views become table, Kanban, cards and list views, with the properties each shows, a board's groups and their order, sorts, covers, and filters of one property each. Calendar, timeline and chart views become table views, reported. Formulas Bases can compute become the base's formulas (`NotionFormulaConverter`, its function table after Obsidian Importer's `formula-converter.ts`); the others, and rollups, are written as their values and reported.
+- Rows (`NotionAPIPropertyReader`): the HTML import's types, relations as links inside the import and as titles outside it.
+- Files Notion holds are downloaded while their page is written, as their addresses expire after about an hour, into the page's folder.
+- A revoked token or Notion unreachable ends the import with what was written and a report that says why. A page unshared during the import is reported and the rest imported.
+
+Not yet: linked database views, rollups as formulas, files downloaded in ranges, and importing again over an earlier import.
 
 ### Better than Obsidian's Importer
 

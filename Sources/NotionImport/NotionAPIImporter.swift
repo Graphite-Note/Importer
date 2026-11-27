@@ -1,0 +1,469 @@
+/**
+ * File: NotionAPIImporter.swift
+ * -----------------------------
+ * Layer: Notion
+ * Description: Imports the pages and databases shared with a Notion integration through Notion's API: pages as notes
+ *              nested as in Notion, databases as bases with their views and formulas, rows as notes with typed
+ *              properties, files downloaded while their page is written, and the import report.
+ *
+ * Authors: Bahey Shalash
+ * Version: 0.1
+ * Date: 27/11/2026
+ */
+
+import ImporterCore
+
+/// How an import through Notion's API runs.
+public struct NotionAPIImportOptions: Sendable {
+    /// The vault folder the import writes in, made when missing.
+    public var destinationFolder: VaultPath
+    /// The import's day (`2026-11-27`), for the report.
+    public var importDate: String
+    /// The pages and databases to import, with everything inside them, by identifier. Empty: everything shared with
+    /// the integration.
+    public var rootIdentifiers: [String]
+    public var reportName: String
+    /// Called after each page or database is written, with how many are done of how many.
+    public var progress: (@Sendable (_ done: Int, _ total: Int) -> Void)?
+
+    public init(destinationFolder: VaultPath, importDate: String, rootIdentifiers: [String] = [], reportName: String = "Notion import report",
+                progress: (@Sendable (Int, Int) -> Void)? = nil) {
+        self.destinationFolder = destinationFolder
+        self.importDate = importDate
+        self.rootIdentifiers = rootIdentifiers
+        self.reportName = reportName
+        self.progress = progress
+    }
+}
+
+/// What an import through the API did.
+public struct NotionAPIImportResult: Sendable {
+    public var report: ImportReport
+    public var reportPath: VaultPath
+    public var propertyTypes: [String: PropertyType]
+    public var wasCancelled: Bool
+    /// Why the import stopped before its end other than by cancelling (a revoked token, Notion unreachable).
+    public var stoppedBecause: String?
+}
+
+/// Imports through Notion's API.
+public enum NotionAPIImporter {
+    public static func importWorkspace(client: NotionAPIClient, into destination: any ImportDestination,
+                                       options: NotionAPIImportOptions) async throws -> NotionAPIImportResult {
+        var run = NotionAPIImportRun(client: client, destination: destination, options: options)
+        return try await run.run()
+    }
+}
+
+/// A page or database of the import, as discovery found it.
+struct NotionAPIItem {
+    enum Kind { case page, database }
+    var identifier: String
+    var kind: Kind
+    var title: String
+    /// The page or database holding it, `nil` at the top. A row's parent is its database.
+    var parent: String?
+    var json: JSONValue
+    /// The vault path of its note or base, and of the folder of what it holds.
+    var path = VaultPath.vaultFolder
+    var folder = VaultPath.vaultFolder
+}
+
+/// One import through the API, from discovery to the report.
+struct NotionAPIImportRun: NotionAPIPropertyResolving {
+    let client: NotionAPIClient
+    let destination: any ImportDestination
+    let options: NotionAPIImportOptions
+    var report: ImportReport
+    var items: [String: NotionAPIItem] = [:]
+    var order: [String] = []
+    var linkTargets: [String: String] = [:]
+    /// Data source identifiers to the database holding them.
+    var databaseOfDataSource: [String: String] = [:]
+    var fileTargets: [String: String] = [:]
+    var outsideTitles: [String: String] = [:]
+    var propertyTypes: [String: PropertyType] = [:]
+    var folderNames: [VaultPath: VaultFolderNames] = [:]
+    var rootFolder: VaultPath
+
+    init(client: NotionAPIClient, destination: any ImportDestination, options: NotionAPIImportOptions) {
+        self.client = client
+        self.destination = destination
+        self.options = options
+        rootFolder = options.destinationFolder
+        report = ImportReport(title: "Notion import", source: "Imported from Notion's API on \(options.importDate).")
+    }
+
+    static func key(_ identifier: String) -> String { NotionAPIPageReader.plainIdentifier(identifier) }
+
+    // MARK: NotionAPIPropertyResolving
+
+    func target(ofPage identifier: String) -> String? {
+        let key = NotionAPIImportRun.key(identifier)
+        guard items[key]?.kind == .page else { return nil }
+        return linkTargets[key]
+    }
+
+    func target(ofDatabase identifier: String) -> String? {
+        let key = NotionAPIImportRun.key(identifier)
+        if let database = databaseOfDataSource[key] { return linkTargets[database] }
+        guard items[key]?.kind == .database else { return nil }
+        return linkTargets[key]
+    }
+
+    func attachmentTarget(forFile url: String) -> String? { fileTargets[url] }
+
+    func title(ofPage identifier: String) -> String? { outsideTitles[NotionAPIImportRun.key(identifier)] }
+
+    // MARK: The run
+
+    mutating func run() async throws -> NotionAPIImportResult {
+        var stoppedBecause: String?
+        // Nothing is written before discovery and planning end: an error there means the import cannot start.
+        try await discover()
+        try await plan()
+        let reportStem = folderNames[rootFolder, default: VaultFolderNames()].claim(stem: options.reportName, pathExtension: "md")
+        let reportPath = rootFolder.appending(reportStem) ?? rootFolder
+        try await destination.createFolder(at: rootFolder)
+
+        var wasCancelled = false
+        let total = order.count
+        for (index, identifier) in order.enumerated() {
+            if Task.isCancelled {
+                wasCancelled = true
+                break
+            }
+            defer { options.progress?(index + 1, total) }
+            guard let item = items[identifier] else { continue }
+            do {
+                switch item.kind {
+                case .page: try await writePage(item)
+                case .database: try await writeDatabase(item)
+                }
+            } catch let error as NotionAPIError {
+                switch error {
+                case .unauthorized, .unavailable:
+                    stoppedBecause = error.description
+                    report.record(.failed, at: item.path, "the import stopped here: \(error.description)")
+                case .notShared:
+                    report.record(.leftOut, at: item.path, "“\(item.title)” was not imported: \(error.description)")
+                default:
+                    report.record(.failed, at: item.path, "“\(item.title)” could not be imported: \(error.description)")
+                }
+                if stoppedBecause != nil { break }
+            } catch is CancellationError {
+                wasCancelled = true
+                break
+            } catch {
+                report.record(.failed, at: item.path, "“\(item.title)” could not be imported: \(ImportReport.text(describing: error)).")
+            }
+        }
+
+        if !propertyTypes.isEmpty {
+            do {
+                for name in try await destination.assignPropertyTypes(propertyTypes) {
+                    report.record(.simplified, at: nil, "the property “\(name)” already has another type in this vault, which it keeps")
+                }
+            } catch {
+                report.record(.failed, at: nil, "the property types could not be written: \(ImportReport.text(describing: error)).")
+            }
+        }
+        if wasCancelled {
+            report.record(.leftOut, at: nil, "the import was stopped before its end: the pages and databases not listed here were not imported.")
+        }
+        if let stoppedBecause {
+            report.record(.failed, at: nil, "the import ended early: \(stoppedBecause)")
+        }
+        try await destination.writeNewFile(Array(report.markdown.utf8), at: reportPath)
+        return NotionAPIImportResult(report: report, reportPath: reportPath, propertyTypes: propertyTypes, wasCancelled: wasCancelled,
+                                     stoppedBecause: stoppedBecause)
+    }
+
+    // MARK: Discovery
+
+    /// Finds every page and database shared with the integration, and how they nest.
+    mutating func discover() async throws {
+        let results = try await client.allResults(post: "search")
+        var databaseIdentifiers: Set<String> = []
+        for result in results {
+            guard let identifier = result["id"]?.string else { continue }
+            switch result["object"]?.string {
+            case "page":
+                let key = NotionAPIImportRun.key(identifier)
+                items[key] = NotionAPIItem(identifier: identifier, kind: .page, title: NotionAPIPropertyReader.title(of: result["properties"] ?? .null),
+                                           parent: try await parentKey(of: result["parent"] ?? .null), json: result)
+            case "data_source":
+                if let database = result["parent"]?["database_id"]?.string {
+                    databaseIdentifiers.insert(database)
+                    databaseOfDataSource[NotionAPIImportRun.key(identifier)] = NotionAPIImportRun.key(database)
+                }
+            case "database":
+                databaseIdentifiers.insert(identifier)
+            default:
+                continue
+            }
+        }
+        for database in databaseIdentifiers.sorted() {
+            let json = try await client.get("databases/\(database)")
+            let key = NotionAPIImportRun.key(database)
+            let title = NotionAPIPropertyReader.plainText(json["title"] ?? .null)
+            for source in json["data_sources"]?.elements ?? [] {
+                if let sourceIdentifier = source["id"]?.string { databaseOfDataSource[NotionAPIImportRun.key(sourceIdentifier)] = key }
+            }
+            items[key] = NotionAPIItem(identifier: database, kind: .database, title: title.isEmpty ? "Untitled" : title,
+                                       parent: try await parentKey(of: json["parent"] ?? .null), json: json)
+        }
+        // A row's parent is its data source, which stands for its database.
+        for (key, item) in items {
+            if let parent = item.parent, let database = databaseOfDataSource[parent] { items[key]?.parent = database }
+        }
+        if !options.rootIdentifiers.isEmpty {
+            let roots = Set(options.rootIdentifiers.map(NotionAPIImportRun.key))
+            func isChosen(_ key: String) -> Bool {
+                var current: String? = key
+                var steps = 0
+                while let candidate = current, steps < 64 {
+                    if roots.contains(candidate) { return true }
+                    current = items[candidate]?.parent
+                    steps += 1
+                }
+                return false
+            }
+            items = items.filter { isChosen($0.key) }
+        }
+        // A parent outside the import leaves its child at the top.
+        for (key, item) in items where item.parent.map({ items[$0] == nil }) ?? false { items[key]?.parent = nil }
+    }
+
+    /// The key of the page, data source or database holding an object, `nil` at the top. A page inside a block is
+    /// held by the page the block is in, found by going up the blocks.
+    func parentKey(of parent: JSONValue) async throws -> String? {
+        switch parent["type"]?.string {
+        case "page_id": return parent["page_id"]?.string.map(NotionAPIImportRun.key)
+        case "data_source_id": return parent["data_source_id"]?.string.map(NotionAPIImportRun.key)
+        case "database_id": return parent["database_id"]?.string.map(NotionAPIImportRun.key)
+        case "block_id":
+            var block = parent["block_id"]?.string
+            var steps = 0
+            while let identifier = block, steps < 16 {
+                let json = try await client.get("blocks/\(identifier)")
+                let next = json["parent"] ?? .null
+                if next["type"]?.string == "page_id" { return next["page_id"]?.string.map(NotionAPIImportRun.key) }
+                block = next["block_id"]?.string
+                steps += 1
+            }
+            return nil
+        default: return nil
+        }
+    }
+
+    // MARK: Plan
+
+    /// Gives each page and database its note or base and its folder, parents before children.
+    mutating func plan() async throws {
+        var children: [String?: [String]] = [:]
+        for (key, item) in items { children[item.parent, default: []].append(key) }
+        for key in children.keys { children[key]?.sort { (items[$0]?.title ?? "", $0) < (items[$1]?.title ?? "", $1) } }
+        folderNames[rootFolder] = VaultFolderNames(existingNames: try await destination.names(inFolderAt: rootFolder))
+        var queue: [(key: String, folder: VaultPath)] = (children[nil] ?? []).map { ($0, rootFolder) }
+        var position = 0
+        while position < queue.count {
+            let (key, folder) = queue[position]
+            position += 1
+            guard var item = items[key] else { continue }
+            if folderNames[folder] == nil { folderNames[folder] = VaultFolderNames(existingNames: try await destination.names(inFolderAt: folder)) }
+            let stem = VaultFileName.stem(forTitle: item.title)
+            let extensionName = item.kind == .database ? "base" : "md"
+            let claimed = folderNames[folder, default: VaultFolderNames()].claimStem(stem, withEachOf: [extensionName, nil])
+            item.path = folder.appending("\(claimed).\(extensionName)") ?? folder
+            item.folder = folder.appending(claimed) ?? folder
+            items[key] = item
+            order.append(key)
+            queue += (children[key] ?? []).map { ($0, item.folder) }
+        }
+        // Link targets: the name alone when no other file of the import has it, else the path.
+        var counts: [String: Int] = [:]
+        for item in items.values { counts[item.path.name.lowercased(), default: 0] += 1 }
+        for (key, item) in items {
+            let isNote = item.kind == .page
+            let name = isNote ? String(item.path.name.dropLast(3)) : item.path.name
+            if counts[item.path.name.lowercased()] == 1 {
+                linkTargets[key] = name
+            } else {
+                let full = item.path.description
+                linkTargets[key] = isNote ? String(full.dropLast(3)) : full
+            }
+        }
+    }
+
+    // MARK: Pages
+
+    /// Reads a block's children, page by page, and theirs, as the page's content needs them.
+    func blocks(of identifier: String, depth: Int = 0) async throws -> [NotionAPIBlock] {
+        var result: [NotionAPIBlock] = []
+        for json in try await client.allResults(get: "blocks/\(identifier)/children") {
+            var block = NotionAPIBlock(json: json)
+            let type = block.type
+            if type == "transcription" || type == "meeting_notes" {
+                let sections = block.content["children"] ?? .null
+                for (title, member) in [("Summary", "summary_block_id"), ("Notes", "notes_block_id"), ("Transcript", "transcript_block_id")] {
+                    if let sectionBlock = sections[member]?.string, depth < 12 {
+                        block.sections.append((title, try await blocks(of: sectionBlock, depth: depth + 1)))
+                    }
+                }
+            } else if type == "synced_block", let original = block.content["synced_from"]?["block_id"]?.string, depth < 12 {
+                block.children = try await blocks(of: original, depth: depth + 1)
+            } else if block.hasChildren, type != "child_page", type != "child_database", depth < 12 {
+                block.children = try await blocks(of: block.identifier, depth: depth + 1)
+            }
+            result.append(block)
+        }
+        return result
+    }
+
+    /// Every file Notion holds that the blocks show, by its address, with the name to save it under.
+    static func files(in blocks: [NotionAPIBlock]) -> [(url: String, name: String)] {
+        var result: [(url: String, name: String)] = []
+        for block in blocks {
+            if ["image", "file", "pdf", "video", "audio"].contains(block.type), let url = block.content["file"]?["url"]?.string {
+                result.append((url, block.content["name"]?.string ?? fileName(ofAddress: url)))
+            }
+            result += files(in: block.children)
+            for section in block.sections { result += files(in: section.blocks) }
+        }
+        return result
+    }
+
+    /// The file name an address ends with, its escapes decoded: `…/abc/Diagram%201.png?X-Amz…` gives `Diagram 1.png`.
+    static func fileName(ofAddress url: String) -> String {
+        let path = url.pieces(separatedBy: "?")[0]
+        let last = path.pieces(separatedBy: "/").last ?? "file"
+        let decoded = last.percentDecoded ?? last
+        return decoded.isEmpty ? "file" : decoded
+    }
+
+    /// Downloads `files` into `folder`, at free names, and records where each went. A file that cannot be downloaded is
+    /// reported by the page that shows it.
+    mutating func download(_ files: [(url: String, name: String)], into folder: VaultPath, for path: VaultPath) async throws {
+        var madeFolder = false
+        for file in files where fileTargets[file.url] == nil {
+            do {
+                let bytes = try await client.download(file.url)
+                if !madeFolder {
+                    try await destination.createFolder(at: folder)
+                    if folderNames[folder] == nil { folderNames[folder] = VaultFolderNames(existingNames: try await destination.names(inFolderAt: folder)) }
+                    madeFolder = true
+                }
+                let parts = file.name.pieces(separatedBy: ".")
+                let pathExtension = parts.count > 1 ? parts.last : nil
+                let stem = VaultFileName.stem(forTitle: parts.count > 1 ? parts.dropLast().joined(separator: ".") : file.name)
+                let name = folderNames[folder, default: VaultFolderNames()].claim(stem: stem, pathExtension: pathExtension)
+                guard let filePath = folder.appending(name) else { continue }
+                try await destination.writeNewFile(bytes, at: filePath)
+                report.recordWritten(.attachment, at: filePath)
+                fileTargets[file.url] = filePath.description
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch let error as NotionAPIError {
+                if case .unauthorized = error { throw error }
+                report.record(.failed, at: path, "the file \(file.name) could not be downloaded: \(error.description)")
+            }
+        }
+    }
+
+    mutating func writePage(_ item: NotionAPIItem) async throws {
+        let content = try await blocks(of: item.identifier)
+        try await download(NotionAPIImportRun.files(in: content), into: item.folder, for: item.path)
+        var frontMatter = FrontMatter()
+        frontMatter.set("notion-id", to: .text(item.identifier))
+        if let emoji = item.json["icon"]?["emoji"]?.string { frontMatter.set("icon", to: .text(emoji)) }
+        if let cover = item.json["cover"]?["external"]?["url"]?.string { frontMatter.set("cover", to: .text(cover)) }
+        if let parent = item.parent, items[parent]?.kind == .database {
+            let formulas = NotionAPIImportRun.convertibleFormulas(of: items[parent]?.json ?? .null)
+            var reader = NotionAPIPropertyReader(resolver: self, formulaNames: Set(formulas.keys))
+            for property in reader.read(item.json["properties"] ?? .null) {
+                frontMatter.set(property.name, to: property.value)
+                assign(property.name, property.type, at: item.path)
+            }
+            for finding in reader.findings { report.record(finding.severity, at: item.path, finding.message) }
+        }
+        let read = NotionAPIPageReader.read(content, resolver: self)
+        for finding in read.findings { report.record(finding.severity, at: item.path, finding.message) }
+        let text = frontMatter.yaml + MarkdownWriter.markdown(for: read.blocks)
+        if let folder = item.path.parent { try await destination.createFolder(at: folder) }
+        try await destination.writeNewFile(Array(text.utf8), at: item.path)
+        report.recordWritten(.note, at: item.path)
+    }
+
+    mutating func assign(_ name: String, _ type: PropertyType, at path: VaultPath) {
+        switch (propertyTypes[name], type) {
+        case (nil, _): propertyTypes[name] = type
+        case (.date?, .datetime): propertyTypes[name] = .datetime
+        case (let existing?, _) where existing == type || (existing == .datetime && type == .date): break
+        case (let existing?, _):
+            report.record(.simplified, at: path, "the property “\(name)” is \(type.rawValue) here but \(existing.rawValue) in an earlier note, "
+                + "and a vault gives a property one type: it is typed \(existing.rawValue)")
+        }
+    }
+
+    // MARK: Databases
+
+    /// The formulas of a database's first data source that Bases can compute, by name, converted.
+    static func convertibleFormulas(of database: JSONValue) -> [String: String] {
+        let schema = database["data_source_schema"] ?? .null
+        var names: [String: String] = [:]
+        for (name, property) in schema.members { if let identifier = property["id"]?.string { names[identifier] = name } }
+        let formulaNames = Set(schema.members.filter { $0.value["type"]?.string == "formula" }.map { $0.key })
+        var result: [String: String] = [:]
+        for (name, property) in schema.members where property["type"]?.string == "formula" {
+            if let expression = property["formula"]?["expression"]?.string,
+                let converted = try? NotionFormulaConverter.convert(expression, propertyNames: names, formulaNames: formulaNames)
+            {
+                result[name] = converted
+            }
+        }
+        return result
+    }
+
+    mutating func writeDatabase(_ item: NotionAPIItem) async throws {
+        let sources = item.json["data_sources"]?.elements ?? []
+        guard let source = sources.first?["id"]?.string else {
+            report.record(.leftOut, at: item.path, "the database “\(item.title)” has no data source the integration can read")
+            return
+        }
+        if sources.count > 1 {
+            report.record(.simplified, at: item.path, "the database “\(item.title)” has \(sources.count) data sources: the base shows the first, "
+                + "and the rows of the others are imported as notes beside it")
+        }
+        let schema = try await client.get("data_sources/\(source)")
+        var database = item.json
+        // The schema, kept with the database for its rows' formulas.
+        if case .object(var members) = database {
+            members.append(("data_source_schema", schema["properties"] ?? .null))
+            database = .object(members)
+            items[NotionAPIImportRun.key(item.identifier)]?.json = database
+        }
+        var views: [JSONValue] = []
+        do {
+            for listed in try await client.allResults(get: "views", query: [("database_id", item.identifier)]) {
+                if let identifier = listed["id"]?.string { views.append(try await client.get("views/\(identifier)")) }
+            }
+        } catch let error as NotionAPIError {
+            if case .unauthorized = error { throw error }
+            report.record(.simplified, at: item.path, "the views of “\(item.title)” could not be read (\(error.description)): the base has one table view")
+        }
+        let base = NotionAPIBaseWriter.base(for: database, schema: schema["properties"] ?? .null, views: views, dataSource: source,
+                                            rowsFolder: item.folder, formulas: NotionAPIImportRun.convertibleFormulas(of: database))
+        for finding in base.findings { report.record(finding.severity, at: item.path, finding.message) }
+        if let folder = item.path.parent { try await destination.createFolder(at: folder) }
+        try await destination.createFolder(at: item.folder)
+        try await destination.writeNewFile(Array(base.file.yaml.utf8), at: item.path)
+        report.recordWritten(.base, at: item.path)
+        for (name, property) in (schema["properties"] ?? .null).members {
+            guard let type = property["type"]?.string, type != "title" else { continue }
+            if type == "formula", NotionAPIImportRun.convertibleFormulas(of: database)[name] != nil { continue }
+            let propertyName = type == "multi_select" && name.lowercased() == "tags" ? "tags" : name
+            assign(propertyName, NotionAPIPropertyReader.propertyType(ofNotionType: type, name: name), at: item.path)
+        }
+    }
+}
