@@ -6,7 +6,7 @@ Description: Every difference between what this importer writes for Obsidian Imp
              Obsidian Importer expects for them, with the reason for each.
 
 Authors: Bahey Shalash
-Version: 0.1
+Version: 0.2
 Date: 27/11/2026
 -->
 
@@ -44,3 +44,8 @@ The same properties, written between `---` lines as front matter. The test print
 | `name: All tasks` instead of `Table View` | The table view keeps the name Notion gives it. |
 | `tags` instead of `Tags` | A multi-select called Tags becomes the notes' `tags`, so its values are tags, as in the HTML import. |
 | `- ""` instead of `- ` in `groupOrder` | Reads the same: both are the column of notes without a value. |
+| `image: note.banner` instead of `note.cover` for the gallery showing page covers | A page's cover is written as its `banner` property (see "Page covers" below), so the cards show it from there. |
+
+## Page covers
+
+Upstream writes a page's cover as a `cover` property. This importer writes it as `banner`, on purpose: `banner` is the property Graphite draws a note's cover from, and the one the Banners and Pixel Banner plugins read in Obsidian, so the cover shows in both. A cover from the web is written as its address. A cover uploaded to Notion is downloaded beside the note, as its other files are, and written as a link to it (`banner: "[[Notion/Course/cover.png]]"`). Upstream writes only a cover from the web. None of upstream's fixtures has a cover, so no expected file shows the difference. `NotionCoverTests` checks it.

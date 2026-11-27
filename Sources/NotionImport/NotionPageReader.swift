@@ -75,7 +75,7 @@ public struct NotionPage: Sendable {
     public var identifier: String?
     /// The page's title, whole (the file name's copy is shortened).
     public var title: String
-    /// The page's properties, with its icon and cover.
+    /// The page's properties, with its icon and its cover (as `banner`).
     public var frontMatter: FrontMatter
     /// The type of each property, for the vault's property types.
     public var propertyTypes: [(name: String, type: PropertyType)]
@@ -149,11 +149,12 @@ public struct NotionPageReader {
                 frontMatter.set("icon", to: .text(icon))
                 propertyTypes.append(("icon", .text))
             }
-            if frontMatter["cover"] == nil,
+            // The cover goes into `banner`, the property Graphite, Banners and Pixel Banner draw a note's cover from.
+            if frontMatter["banner"] == nil,
                 let cover = header.firstDescendant(where: { $0.hasClass("page-cover-image") })?.attributes["src"]
             {
-                frontMatter.set("cover", to: .text(imageReference(cover, asWikiLink: true)))
-                propertyTypes.append(("cover", .text))
+                frontMatter.set("banner", to: .text(imageReference(cover, asWikiLink: true)))
+                propertyTypes.append(("banner", .text))
             }
         }
 

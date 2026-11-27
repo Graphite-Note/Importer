@@ -96,7 +96,7 @@ enum NotionAPIBaseWriter {
             }
             if let cover = configuration["cover"] {
                 switch cover["type"]?.string {
-                case "page_cover": baseView.image = "note.cover"
+                case "page_cover": baseView.image = "note.banner"
                 case "property":
                     if let property = cover["property_id"]?.string.flatMap({ names[$0] }) ?? cover["property_name"]?.string { baseView.image = "note." + property }
                 default: break

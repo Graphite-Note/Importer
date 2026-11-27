@@ -30,7 +30,7 @@ views:
       - file.name
       - Priority
       - Owner
-    image: note.cover
+    image: note.banner
   - type: kanban
     name: By priority
     groupBy:

@@ -6,8 +6,8 @@ Description: Every difference between the notes this importer writes for Obsidia
              the notes Obsidian Importer expects for it, with the reason for each.
 
 Authors: Bahey Shalash
-Version: 0.1
-Date: 26/11/2026
+Version: 0.2
+Date: 27/11/2026
 -->
 
 # Differences from Obsidian Importer's notes
@@ -50,3 +50,7 @@ Only the end of the file: notes written here end with a line end, as text files 
 ## Upstream's database row
 
 `database-row.html` gives upstream's `expected/database-row.md` byte for byte, but for the line end at the end of the file.
+
+## Page covers
+
+Upstream writes a page's cover as a `cover` property. This importer writes it as `banner`, on purpose: `banner` is the property Graphite draws a note's cover from, and the one the Banners and Pixel Banner plugins read in Obsidian, so the cover shows in both. A cover held in the export is written as a link to the copied picture (`banner: "[[cover.png]]"`), a cover from the web as its address. `notion-testspace.zip` has no cover, so no expected note shows the difference. `NotionCoverTests` checks it.

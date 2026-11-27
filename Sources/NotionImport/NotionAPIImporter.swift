@@ -540,11 +540,19 @@ struct NotionAPIImportRun: NotionAPIPropertyResolving {
     mutating func writePage(_ item: NotionAPIItem) async throws {
         let content = try await blocks(of: item.identifier)
         try await readEmbeddedDatabases(in: content, at: item.path)
-        try await download(NotionAPIImportRun.files(in: content), into: item.folder, for: item.path)
+        let coverFile = item.json["cover"]?["file"]?["url"]?.string
+        let files = NotionAPIImportRun.files(in: content) + (coverFile.map { [($0, NotionAPIImportRun.fileName(ofAddress: $0))] } ?? [])
+        try await download(files, into: item.folder, for: item.path)
         var frontMatter = FrontMatter()
         frontMatter.set("notion-id", to: .text(item.identifier))
         if let emoji = item.json["icon"]?["emoji"]?.string { frontMatter.set("icon", to: .text(emoji)) }
-        if let cover = item.json["cover"]?["external"]?["url"]?.string { frontMatter.set("cover", to: .text(cover)) }
+        // The cover goes into `banner`, the property Graphite, Banners and Pixel Banner draw a note's cover from: a
+        // picture from the web as its address, a picture uploaded to Notion downloaded beside the note and linked.
+        if let cover = item.json["cover"]?["external"]?["url"]?.string {
+            frontMatter.set("banner", to: .text(cover))
+        } else if let coverFile, let target = fileTargets[coverFile] {
+            frontMatter.set("banner", to: .text("[[" + target + "]]"))
+        }
         if let parent = item.parent, items[parent]?.kind == .database {
             let formulas = NotionAPIImportRun.convertibleFormulas(of: items[parent]?.json ?? .null)
             var reader = NotionAPIPropertyReader(resolver: self, formulaNames: Set(formulas.keys))
