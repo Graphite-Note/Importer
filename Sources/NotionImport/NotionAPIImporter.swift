@@ -53,6 +53,17 @@ public enum NotionAPIImporter {
         var run = NotionAPIImportRun(client: client, destination: destination, options: options)
         return try await run.run()
     }
+
+    /// Imports the workspace again into the folder of an earlier import, `options.destinationFolder`: each page and
+    /// database goes where the earlier import put it, matched by its `notion-id`, and replaces it only when nobody
+    /// changed it since. A note changed in the vault is kept and reported. New pages and databases are added beside,
+    /// attachments already there are kept.
+    public static func updateImport(client: NotionAPIClient, in destination: any UpdatingImportDestination,
+                                    options: NotionAPIImportOptions) async throws -> NotionAPIImportResult {
+        var run = NotionAPIImportRun(client: client, destination: destination, options: options)
+        run.updater = destination
+        return try await run.run()
+    }
 }
 
 /// A page or database of the import, as discovery found it.
@@ -105,6 +116,14 @@ struct NotionAPIImportRun: NotionAPIPropertyResolving {
     var linkedViewNames: Set<String> = []
     /// The databases whose base is written, by key.
     var writtenBases: Set<String> = []
+    /// The destination when the import updates an earlier one.
+    var updater: (any UpdatingImportDestination)?
+    /// The earlier import's notes and bases, by key, with the fingerprint of what it wrote when known.
+    var earlier: [String: NotionAPIImportRecord.Entry] = [:]
+    /// What this import leaves, for the next one.
+    var record = NotionAPIImportRecord()
+    /// Notes and bases an update left as they were, replaced, and kept because they changed in the vault.
+    var updateCounts = (unchanged: 0, replaced: 0, kept: 0)
 
     init(client: NotionAPIClient, destination: any ImportDestination, options: NotionAPIImportOptions) {
         self.client = client
@@ -144,6 +163,7 @@ struct NotionAPIImportRun: NotionAPIPropertyResolving {
         var stoppedBecause: String?
         // Nothing is written before discovery and planning end: an error there means the import cannot start.
         try await discover()
+        try await readEarlierImport()
         try await plan()
         let reportStem = folderNames[rootFolder, default: VaultFolderNames()].claim(stem: options.reportName, pathExtension: "md")
         let reportPath = rootFolder.appending(reportStem) ?? rootFolder
@@ -196,6 +216,11 @@ struct NotionAPIImportRun: NotionAPIPropertyResolving {
         }
         if let stoppedBecause {
             report.record(.failed, at: nil, "the import ended early: \(stoppedBecause)")
+        }
+        try await writeRecord()
+        if updater != nil {
+            report.source += " It updates the earlier import in this folder: \(updateCounts.replaced) replaced, \(updateCounts.unchanged) unchanged, "
+                + "\(updateCounts.kept) kept as changed in the vault."
         }
         try await destination.writeNewFile(Array(report.markdown.utf8), at: reportPath)
         return NotionAPIImportResult(report: report, reportPath: reportPath, propertyTypes: propertyTypes, wasCancelled: wasCancelled,
@@ -394,9 +419,17 @@ struct NotionAPIImportRun: NotionAPIPropertyResolving {
             if folderNames[folder] == nil { folderNames[folder] = VaultFolderNames(existingNames: try await destination.names(inFolderAt: folder)) }
             let stem = VaultFileName.stem(forTitle: item.title)
             let extensionName = item.kind == .database ? "base" : "md"
-            let claimed = folderNames[folder, default: VaultFolderNames()].claimStem(stem, withEachOf: [extensionName, nil])
-            item.path = folder.appending("\(claimed).\(extensionName)") ?? folder
-            item.folder = folder.appending(claimed) ?? folder
+            if let previous = earlier[key]?.path, previous.name.hasSuffix("." + extensionName), let parent = previous.parent,
+                let previousFolder = parent.appending(String(previous.name.dropLast(extensionName.count + 1)))
+            {
+                // Where the earlier import put it, whatever its title now: its name and its folder's are taken already.
+                item.path = previous
+                item.folder = previousFolder
+            } else {
+                let claimed = folderNames[folder, default: VaultFolderNames()].claimStem(stem, withEachOf: [extensionName, nil])
+                item.path = folder.appending("\(claimed).\(extensionName)") ?? folder
+                item.folder = folder.appending(claimed) ?? folder
+            }
             items[key] = item
             order.append(key)
             queue += (children[key] ?? []).map { ($0, item.folder) }
@@ -482,6 +515,12 @@ struct NotionAPIImportRun: NotionAPIPropertyResolving {
                 let parts = file.name.pieces(separatedBy: ".")
                 let pathExtension = parts.count > 1 ? parts.last : nil
                 let stem = VaultFileName.stem(forTitle: parts.count > 1 ? parts.dropLast().joined(separator: ".") : file.name)
+                // An update keeps the file an earlier import downloaded under the same name.
+                let earlierName = stem + (pathExtension.map { "." + $0 } ?? "")
+                if updater != nil, try await destination.names(inFolderAt: folder).contains(earlierName), let earlierPath = folder.appending(earlierName) {
+                    fileTargets[file.url] = earlierPath.description
+                    continue
+                }
                 let name = folderNames[folder, default: VaultFolderNames()].claim(stem: stem, pathExtension: pathExtension)
                 guard let filePath = folder.appending(name) else { continue }
                 let writer = try await destination.createNewFile(at: filePath)
@@ -519,8 +558,7 @@ struct NotionAPIImportRun: NotionAPIPropertyResolving {
         for finding in read.findings { report.record(finding.severity, at: item.path, finding.message) }
         let text = frontMatter.yaml + MarkdownWriter.markdown(for: read.blocks)
         if let folder = item.path.parent { try await destination.createFolder(at: folder) }
-        try await destination.writeNewFile(Array(text.utf8), at: item.path)
-        report.recordWritten(.note, at: item.path)
+        try await save(Array(text.utf8), of: item, kind: .note)
     }
 
     mutating func assign(_ name: String, _ type: PropertyType, at path: VaultPath) {
@@ -598,9 +636,8 @@ struct NotionAPIImportRun: NotionAPIPropertyResolving {
         for finding in base.findings { report.record(finding.severity, at: item.path, finding.message) }
         if let folder = item.path.parent { try await destination.createFolder(at: folder) }
         try await destination.createFolder(at: item.folder)
-        try await destination.writeNewFile(Array(base.file.yaml.utf8), at: item.path)
+        try await save(Array(base.file.yaml.utf8), of: item, kind: .base)
         writtenBases.insert(NotionAPIImportRun.key(item.identifier))
-        report.recordWritten(.base, at: item.path)
         for (name, property) in (schema["properties"] ?? .null).members {
             guard let type = property["type"]?.string, type != "title" else { continue }
             // A computed property is either the base's formula or, in each row, the value it had: the rows type it.

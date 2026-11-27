@@ -81,7 +81,7 @@ An internal integration's token (`ntn_…`), kept by the host (the Keychain in G
 - Files Notion holds are downloaded while their page is written, as their addresses expire after about an hour, into the page's folder, in ranges of 8 MB written piece by piece.
 - A revoked token or Notion unreachable ends the import with what was written and a report that says why. A page unshared during the import is reported and the rest imported.
 
-Not yet: importing again over an earlier import.
+- Importing again (`NotionAPIImporter.updateImport`, into a destination that is also an `UpdatingImportDestination`): every import leaves `.notion-import.json` in its folder, each note's and base's path with the fingerprint of the bytes written (`ContentFingerprint`, 64-bit FNV-1a). An update finds the earlier notes by their `notion-id`, wherever they were moved in the folder, and writes each page and database where the earlier import put it. A file still holding what the earlier import wrote is replaced, the host checking it is still the same at that moment. A file changed in the vault since, or one whose fingerprint is not known, is kept and reported. New pages and databases are added beside, and a file already downloaded under its name is kept, so nothing is written twice.
 
 ### Better than Obsidian's Importer
 
@@ -105,4 +105,4 @@ Swift Testing, on macOS and Linux, and a WebAssembly build of `ImporterCore` and
 - Embedded Swift has no weak references: there `HTMLNode.parent` is `unowned(unsafe)`, so a node must not outlive its document, which the importers never let happen. Embedded Swift also describes only the errors it is told of: a host's own error reaches the report as `ReportedError` with its words.
 - The plugin API writes a file whole, so the plugin holds an attachment in the web view's memory until its last piece, about twice its size at the write.
 - Pages are read whole (refused over 256 MB each), attachments in 64 KB pieces. Real exports of 139 MB import in about 8 s with 160 MB of memory at most on a Mac.
-- Importing again writes beside the earlier import (`Course 2.md`), never over it. Updating only the notes nobody edited is planned with the API import.
+- Importing the HTML export again writes beside the earlier import (`Course 2.md`), never over it. The API import updates an earlier import (above).
