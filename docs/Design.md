@@ -7,8 +7,8 @@ Description: How the Importer is built: its layers, what the host provides, how 
              Importer.
 
 Authors: Bahey Shalash
-Version: 0.2
-Date: 26/11/2026
+Version: 0.3
+Date: 27/11/2026
 -->
 
 # Design
@@ -21,15 +21,17 @@ Decided 2026-11-26: the importers are written in Swift in this repository instea
 2. **Nothing lost in silence.** Every page and database ends in the import report, a note in the import's folder that says what was converted, what was simplified (a column layout flattened, a synced block copied, a formula function Bases lacks) and what was left out, with a link to each note.
 3. **Bounded memory.** An export of several GB is read entry by entry from the picked file, never loaded whole. Attachments are copied in pieces.
 4. **Never overwrite.** A destination refuses to replace a file. Importing again updates only notes the importer wrote and nobody edited since.
-5. **One code base everywhere.** The core uses only the parts of Foundation that also exist on Linux and on WebAssembly (no Apple frameworks, no `NSString` bridging, no Combine, no Dispatch), so the same code runs in the Mac and iPad apps, in tests on Linux, and as a WebAssembly plugin.
+5. **One code base everywhere.** The importers use the Swift standard library alone (since 0.2.0: no Foundation, no Apple frameworks, no Dispatch), within what Embedded Swift compiles, so the same code runs in the Mac and iPad apps, in tests on Linux, and as a WebAssembly plugin of under a megabyte. Only `ImporterFileSystem`, which reads and writes files on disk for the hosts that link the package, uses Foundation.
 
 ## Layers
 
 | Target | Holds |
 | --- | --- |
-| `ImporterCore` | Vault file names (`VaultFileName`), the names taken in a folder (`VaultFolderNames`), vault paths (`VaultPath`), the destination (`ImportDestination`, `FolderImportDestination`). The source read by range (`RandomAccessSource`), zip archives with zip64 (`ZipArchive`), a DEFLATE decoder (`Inflater`) and CRC-32, the files of an export across its parts and nested zips (`ExportFileTree`), temporary storage for compressed nested zips (`TemporaryStorage`). An HTML reader (`HTMLDocument`), CSV tables (`CSVTable`). The model of a note (`MarkdownBlock`, `MarkdownInline`) and its writer (`MarkdownWriter`), front matter and property types (`FrontMatter`, `PropertyType`), bases (`BaseFile`), the import report (`ImportReport`). |
+| `ImporterCore` | Vault file names (`VaultFileName`), the names taken in a folder (`VaultFolderNames`), vault paths (`VaultPath`), the destination (`ImportDestination`). The source read by range (`RandomAccessSource`), zip archives with zip64 (`ZipArchive`), a DEFLATE decoder (`Inflater`) and CRC-32, the files of an export across its parts and nested zips (`ExportFileTree`), temporary storage for compressed nested zips (`TemporaryStorage`). An HTML reader (`HTMLDocument`), CSV tables (`CSVTable`). The model of a note (`MarkdownBlock`, `MarkdownInline`) and its writer (`MarkdownWriter`), front matter and property types (`FrontMatter`, `PropertyType`), bases (`BaseFile`), the import report (`ImportReport`). The text functions the importers took from Foundation, written for the standard library (`TextFunctions`: trimming, replacing, splitting and finding text scalar by scalar, percent escapes, web addresses), each tested against Foundation's. |
 | `NotionImport` | Notion's export names (`NotionExportEntryName`), the HTML export (`NotionHTMLImporter`, `NotionVaultPlan`, `NotionPageReader`, `NotionPropertyReader`, `NotionDateParser`). Planned: the API, Notion's formulas in Bases' formula language. |
+| `ImporterFileSystem` | Files on disk, with Foundation: a file read by range (`FileRandomAccessSource`), a vault folder (`FolderImportDestination`), temporary files in a folder (`FolderTemporaryStorage`), an unpacked export (`ExportFileTree.reading(folder:)`). For the hosts that link the package, the command and the tests. |
 | `ImporterCommand` | The `importer` command, for manual runs: imports into a folder on disk. |
+| `Plugin/` (a package of its own) | `ImporterWasm`, the WebAssembly module's exports and host calls, and the JavaScript plugin around it. |
 
 A format reads its source into a small model of pages, blocks, properties and databases, then one writer per output kind turns that model into files. Formats share the writers, so Markdown, links and bases are written the same way whatever the source.
 
@@ -38,7 +40,7 @@ A format reads its source into a small model of pages, blocks, properties and da
 The importer opens no file and sends no request on its own. The host passes:
 
 - **The source** to read: random access to the picked export (read a range of bytes, the size), so a zip's central directory is read first and each entry is inflated as it is converted.
-- **The destination** (`ImportDestination`): make a folder, write a new file, list a folder. Graphite writes through its coordinated vault writes, so iCloud and the index see each file once. `FolderImportDestination` writes a folder on disk, for tests and tools.
+- **The destination** (`ImportDestination`): make a folder, write a new file, list a folder. Graphite writes through its coordinated vault writes, so iCloud and the index see each file once. `FolderImportDestination` writes a folder on disk, for tests and tools. The plugin writes through the plugin API (`vault.createBinary`, which refuses an existing file).
 - **The transport**, for API imports: send a request, receive the answer. Graphite uses `URLSession` with the token from the Keychain. The WebAssembly build passes requests to the plugin runtime's `requestUrl`.
 - **Temporary storage** (`TemporaryStorage`), for the few bytes that must be read again by range: a `Part-N` zip compressed inside the download is inflated there before its central directory is read. A zip stored inside another is read where it lies.
 - **Progress and cancellation**: the importer reports pages done and pages left, and stops at the next page when its task is cancelled, leaving a usable partial import and its report.
@@ -46,7 +48,9 @@ The importer opens no file and sends no request on its own. The host passes:
 ## Reaching Graphite
 
 1. **Linked.** Graphite depends on this package with an exact version, as it depends on MermaidDiagrams. Import › From Notion… opens a native sheet. Nothing of the importer is made until that sheet opens, so it costs nothing at launch or at rest.
-2. **Downloadable.** Apple's guideline 2.5.2 refuses downloaded native code on iOS, but code run by WebKit is allowed, and Graphite's community-plugin runtime is a WKWebView. The package compiled to WebAssembly with the Swift SDK for WebAssembly, plus a small JavaScript plugin around it, becomes a plugin installed from Graphite's plugin list. Once it works on the iPad and the Mac, Graphite drops the linked copy and the app shrinks by the importer's size. Open questions for this step: the size of the WebAssembly module with Foundation, and the memory a large export takes in the web view.
+2. **Downloadable.** Apple's guideline 2.5.2 refuses downloaded native code on iOS, but code run by WebKit is allowed, and Graphite's community-plugin runtime is a WKWebView. The package compiled to WebAssembly with the Swift SDK for WebAssembly, plus a small JavaScript plugin around it, becomes a plugin installed from Graphite's plugin list. Once it works on the iPad and the Mac, Graphite drops the linked copy and the app shrinks by the importer's size.
+
+   The module (`Plugin/`) is built with Embedded Swift for `wasm32-unknown-wasip1` as a WASI reactor: 890 KB, 347 KB gzip, 258 KB brotli, against 6.3 MB (1.9 MB gzip) with the whole standard library and 53.6 MB with Foundation (Graphite's section 7 spike). It is carried inside the plugin's `main.js`, as plugins are installed from `main.js` and `manifest.json` alone. Each read, write and request is one host call (`importer_host.call`) that JavaScript answers later through `importer_resume`, so the import's async Swift code waits on the web view without blocking it. The picked files are read by range with `Blob.slice`, compressed `Part-N` zips are inflated into blobs the web view may keep on disk, and the vault is written through the plugin API, each attachment whole when its last piece arrives, as the plugin API has no write by pieces.
 
 ## Notion
 
@@ -84,10 +88,11 @@ Each row is a plan until the import of the test workspace shows it.
 
 ## Tests
 
-Swift Testing, on macOS and Linux, and a WebAssembly build of `ImporterCore` and `NotionImport`, for every push. Each format is tested on material made for the purpose or published under a license that allows it, never on personal notes. Notion's HTML import is tested on Obsidian Importer's own test exports (`Tests/Fixtures/Notion`), compared file by file with an expected vault and line by line with upstream's expected notes, every difference explained, and on exports made by the tests for databases, CSV rows, nested parts, long titles, names already in the vault and paths that leave the export.
+Swift Testing, on macOS and Linux, and a WebAssembly build of `ImporterCore` and `NotionImport` and of the plugin's module (Embedded Swift and the standard library), each module importing the test exports in Node with the result compared byte for byte with the `importer` command's, for every push. Each format is tested on material made for the purpose or published under a license that allows it, never on personal notes. Notion's HTML import is tested on Obsidian Importer's own test exports (`Tests/Fixtures/Notion`), compared file by file with an expected vault and line by line with upstream's expected notes, every difference explained, and on exports made by the tests for databases, CSV rows, nested parts, long titles, names already in the vault and paths that leave the export.
 
 ## Known limits
 
-- Foundation makes a WebAssembly module of about 53.6 MB, where the standard library alone gives 5.6 MB (Graphite's section 7 spike). The core uses `Data`, `FileManager` and `URL`: moving the disk types (`FolderImportDestination`, `FileRandomAccessSource`, `FolderTemporaryStorage`, `ExportFileTree.reading(folder:)`) to a host target and the rest to `[UInt8]` is the way to the smaller module.
+- Embedded Swift has no weak references: there `HTMLNode.parent` is `unowned(unsafe)`, so a node must not outlive its document, which the importers never let happen. Embedded Swift also describes only the errors it is told of: a host's own error reaches the report as `ReportedError` with its words.
+- The plugin API writes a file whole, so the plugin holds an attachment in the web view's memory until its last piece, about twice its size at the write.
 - Pages are read whole (refused over 256 MB each), attachments in 64 KB pieces. Real exports of 139 MB import in about 8 s with 160 MB of memory at most on a Mac.
 - Importing again writes beside the earlier import (`Course 2.md`), never over it. Updating only the notes nobody edited is planned with the API import.

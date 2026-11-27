@@ -6,11 +6,10 @@
  *              class) into a typed Obsidian property: text, number, check box, date, list, links to pages and files.
  *
  * Authors: Bahey Shalash
- * Version: 0.1
- * Date: 26/11/2026
+ * Version: 0.2
+ * Date: 27/11/2026
  */
 
-import Foundation
 import ImporterCore
 
 /// Reads a property's value from its table cell.
@@ -62,7 +61,7 @@ public struct NotionPropertyReader {
     /// cell's links already resolved: wiki links to pages and attachments, addresses for the rest.
     public mutating func read(name: String, notionType: String, cell: HTMLNode, links: [String]) -> Property? {
         warning = nil
-        let text = cell.textContent.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = cell.textContent.trimmingSpacesAndLineBreaks()
         switch notionType {
         case "checkbox":
             return Property(name: name, value: .checkbox(cell.firstDescendant(where: { $0.hasClass("checkbox-on") }) != nil),
@@ -80,7 +79,7 @@ public struct NotionPropertyReader {
             guard !values.isEmpty else { return nil }
             if name.lowercased() == "tags" {
                 // A tag cannot hold a space.
-                return Property(name: "tags", value: .list(values.map { $0.replacingOccurrences(of: " ", with: "-") }), type: .tags)
+                return Property(name: "tags", value: .list(values.map { $0.replacingEvery(" ", with: "-") }), type: .tags)
             }
             return Property(name: name, value: .list(values), type: .multitext)
         case "select", "status":
@@ -98,7 +97,7 @@ public struct NotionPropertyReader {
             return value.isEmpty ? nil : Property(name: name, value: .text(value), type: .text)
         case "person", "created_by", "last_edited_by":
             let users = cell.descendants(where: { $0.hasClass("user") }).map {
-                $0.textContent.trimmingCharacters(in: .whitespacesAndNewlines)
+                $0.textContent.trimmingSpacesAndLineBreaks()
             }.filter { !$0.isEmpty }
             let value = users.isEmpty ? text : users.joined(separator: ", ")
             return value.isEmpty ? nil : Property(name: name, value: .text(value), type: .text)
@@ -120,14 +119,14 @@ public struct NotionPropertyReader {
 
     private func selectedValues(in cell: HTMLNode) -> [String] {
         cell.descendants(where: { $0.hasClass("selected-value") }).map {
-            $0.textContent.trimmingCharacters(in: .whitespacesAndNewlines)
+            $0.textContent.trimmingSpacesAndLineBreaks()
         }.filter { !$0.isEmpty }
     }
 
     private mutating func date(name: String, cell: HTMLNode, text: String) -> Property? {
         let times = cell.descendants(where: { $0.tagName == "time" })
-        let written = (times.isEmpty ? text : times.map(\.textContent).joined(separator: " → "))
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let written = (times.isEmpty ? text : times.map({ $0.textContent }).joined(separator: " → "))
+            .trimmingSpacesAndLineBreaks()
         guard !written.isEmpty else { return nil }
         guard let dates = dateParser.parseRange(written) else {
             warning = "the date “\(written)” of the property “\(name)” could not be read, so it was kept as text"
@@ -136,14 +135,14 @@ public struct NotionPropertyReader {
         let type: PropertyType = dates.contains(where: { $0.time != nil }) ? .datetime : .date
         if dates.count == 2 {
             warning = "a range of dates in the property “\(name)” was kept as text, which Obsidian's properties cannot type"
-            return Property(name: name, value: .text(dates.map(\.propertyText).joined(separator: " → ")), type: type)
+            return Property(name: name, value: .text(dates.map({ $0.propertyText }).joined(separator: " → ")), type: type)
         }
         return Property(name: name, value: .date(dates[0].propertyText), type: type)
     }
 
     /// A number as a property writes it, `nil` when `text` is no plain number (`$1,234.56` and `15%` stay text).
     static func number(_ text: String) -> String? {
-        let cleaned = text.trimmingCharacters(in: .whitespaces)
+        let cleaned = text.trimmingSpaces()
         guard let value = Double(cleaned), value.isFinite,
             cleaned.allSatisfy({ $0.isNumber || $0 == "." || $0 == "-" || $0 == "e" || $0 == "E" || $0 == "+" })
         else { return nil }

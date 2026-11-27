@@ -7,11 +7,10 @@
  *              identifier whatever the names Notion shortened.
  *
  * Authors: Bahey Shalash
- * Version: 0.1
- * Date: 26/11/2026
+ * Version: 0.2
+ * Date: 27/11/2026
  */
 
-import Foundation
 import ImporterCore
 
 /// The files of Notion's HTML export, sorted.
@@ -98,7 +97,7 @@ struct NotionExport: Sendable {
     /// Takes the HTML files `found` as pages with their identifiers. The other unnamed HTML files are attachments, but
     /// for Notion's own index of the export, which is no page of the workspace.
     mutating func adoptUnnamedPages(_ found: [(file: ExportFile, identifier: String)]) {
-        var seen = Set(pages.map(\.identifier))
+        var seen = Set(pages.map({ $0.identifier }))
         var adopted: Set<String> = []
         for (file, identifier) in found where seen.insert(identifier).inserted {
             pages.append(Page(identifier: identifier, file: file, titleFromName: String(file.name.dropLast(".html".count))))
@@ -214,7 +213,7 @@ struct NotionVaultPlan: NotionLinkResolving, Sendable {
 
         // A link names the note alone when no other file of the import has its name, else its path.
         var counts: [String: Int] = [:]
-        let allPaths = placements.values.map(\.path) + attachmentPaths.values
+        let allPaths = placements.values.map({ $0.path }) + attachmentPaths.values
         for path in allPaths { counts[NotionVaultPlan.linkKey(path), default: 0] += 1 }
         for path in allPaths {
             let isNote = path.name.hasSuffix(".md")
@@ -240,7 +239,7 @@ struct NotionVaultPlan: NotionLinkResolving, Sendable {
     /// cleaned as every vault name is.
     static func attachmentName(_ name: String) -> (stem: String, pathExtension: String?) {
         var readable = name
-        if let decoded = name.removingPercentEncoding, decoded != name, !decoded.contains("/"),
+        if let decoded = name.percentDecoded, decoded != name, !decoded.contains("/"),
             !decoded.unicodeScalars.contains(where: { $0.value < 0x20 })
         {
             readable = decoded
@@ -297,14 +296,14 @@ struct NotionVaultPlan: NotionLinkResolving, Sendable {
     func attachmentTarget(atExportPath exportPath: [String]) -> String? {
         if let path = attachmentPaths[NotionVaultPlan.key(exportPath)] { return linkTargets[path] }
         // Some links are escaped twice.
-        let decoded = exportPath.map { $0.removingPercentEncoding ?? $0 }
+        let decoded = exportPath.map { $0.percentDecoded ?? $0 }
         if let path = attachmentPaths[NotionVaultPlan.key(decoded)] { return linkTargets[path] }
         return nil
     }
 
     func pageIdentifier(atExportPath exportPath: [String]) -> String? {
         pageIdentifiers[NotionVaultPlan.key(exportPath)]
-            ?? pageIdentifiers[NotionVaultPlan.key(exportPath.map { $0.removingPercentEncoding ?? $0 })]
+            ?? pageIdentifiers[NotionVaultPlan.key(exportPath.map { $0.percentDecoded ?? $0 })]
     }
 
     func headingText(inPage pageIdentifier: String, block blockIdentifier: String) -> String? {

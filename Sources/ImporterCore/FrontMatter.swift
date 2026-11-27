@@ -6,11 +6,9 @@
  *              plain scalars where YAML reads them back as the same text, quoted otherwise, lists one item a line.
  *
  * Authors: Bahey Shalash
- * Version: 0.1
- * Date: 26/11/2026
+ * Version: 0.2
+ * Date: 27/11/2026
  */
-
-import Foundation
 
 /// The type of a property, as Obsidian names it in `.obsidian/types.json`.
 public enum PropertyType: String, Equatable, Sendable, CaseIterable {
@@ -137,7 +135,7 @@ public enum YAMLScalar {
         if first.isWhitespace || last.isWhitespace { return true }
         if indicatorCharacters.contains(first) { return true }
         if last == ":" { return true }
-        if text.contains(": ") || text.contains(" #") || text.contains(where: { $0.isNewline }) { return true }
+        if text.contains(text: ": ") || text.contains(text: " #") || text.contains(where: { $0.isNewline }) { return true }
         if text.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7F }) { return true }
         if reservedWords.contains(text.lowercased()) { return true }
         if looksLikeNumber(text) || looksLikeDate(text) { return true }

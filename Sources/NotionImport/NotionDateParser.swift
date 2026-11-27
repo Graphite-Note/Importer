@@ -6,11 +6,11 @@
  *              "2021年2月25日", ranges with "→") into the dates and times of Obsidian properties.
  *
  * Authors: Bahey Shalash
- * Version: 0.1
- * Date: 26/11/2026
+ * Version: 0.2
+ * Date: 27/11/2026
  */
 
-import Foundation
+import ImporterCore
 
 /// A date read from Notion's export: the day, and the time when one was written.
 public struct NotionDate: Equatable, Sendable {
@@ -66,8 +66,8 @@ public struct NotionDateParser: Sendable {
 
     /// The dates of `text`: one, or two for a range written with "→". `nil` when one of them cannot be read.
     public func parseRange(_ text: String) -> [NotionDate]? {
-        let parts = NotionDateParser.normalized(text).components(separatedBy: "→").map {
-            $0.trimmingCharacters(in: .whitespaces)
+        let parts = NotionDateParser.normalized(text).pieces(separatedBy: "→").map {
+            $0.trimmingSpaces()
         }
         guard parts.count <= 2, let start = parse(parts[0]) else { return nil }
         guard parts.count == 2 else { return [start] }
@@ -97,12 +97,12 @@ public struct NotionDateParser: Sendable {
     // MARK: Parts
 
     private static func normalized(_ text: String) -> String {
-        var result = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        var result = text.trimmingSpacesAndLineBreaks()
         if result.hasPrefix("@") { result.removeFirst() }
         result = result.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
         // A zoned time ends in "(GMT+2)" or "(PDT)": the time as written is what is kept.
         if result.hasSuffix(")"), let open = result.lastIndex(of: "(") {
-            result = String(result[..<open]).trimmingCharacters(in: .whitespaces)
+            result = String(result[..<open]).trimmingSpaces()
         }
         return result
     }
@@ -115,15 +115,15 @@ public struct NotionDateParser: Sendable {
         for count in [2, 1] where words.count > count {
             let candidate = words.suffix(count).joined(separator: " ")
             if NotionDateParser.parseTime(candidate) != nil, candidate.contains(":") {
-                let date = words.dropLast(count).joined(separator: " ").trimmingCharacters(in: CharacterSet(charactersIn: ", "))
+                let date = words.dropLast(count).joined(separator: " ").trimming(anyOf: ", ")
                 return (date, candidate)
             }
         }
-        return (text.trimmingCharacters(in: CharacterSet(charactersIn: ", ")), nil)
+        return (text.trimming(anyOf: ", "), nil)
     }
 
     private static func parseTime(_ text: String) -> (hour: Int, minute: Int)? {
-        var rest = text.lowercased().replacingOccurrences(of: " ", with: "")
+        var rest = text.lowercased().replacingEvery(" ", with: "")
         var meridiem: String?
         for suffix in ["am", "pm"] where rest.hasSuffix(suffix) {
             meridiem = suffix
@@ -148,7 +148,7 @@ public struct NotionDateParser: Sendable {
 
     private static func numericParts(of text: String) -> (Int, Int, Int)? {
         for separator in ["/", ".", "-"] {
-            let pieces = text.components(separatedBy: separator)
+            let pieces = text.pieces(separatedBy: separator)
             guard pieces.count == 3, pieces[2].count == 4, let first = Int(pieces[0]), let second = Int(pieces[1]),
                 let year = Int(pieces[2]), pieces[0].count <= 2, pieces[1].count <= 2
             else { continue }
@@ -159,8 +159,8 @@ public struct NotionDateParser: Sendable {
 
     private func parseDate(_ text: String) -> NotionDate? {
         // 2021-02-25, 2021/02/25, 2021年2月25日, 2021년 2월 25일.
-        let yearFirstSeparators = CharacterSet(charactersIn: "-/.年月日년월일 ")
-        let yearFirst = text.components(separatedBy: yearFirstSeparators).filter { !$0.isEmpty }
+        let yearFirstSeparators = "-/.年月日년월일 "
+        let yearFirst = text.pieces(separatedByAnyOf: yearFirstSeparators).filter { !$0.isEmpty }
         if yearFirst.count == 3, yearFirst[0].count == 4, let year = Int(yearFirst[0]), let month = Int(yearFirst[1]),
             let day = Int(yearFirst[2])
         {
@@ -185,8 +185,8 @@ public struct NotionDateParser: Sendable {
 
     private func parseNamedDate(_ text: String) -> NotionDate? {
         // "February 25, 2021", "Feb 25", "25 February 2021", "25. Februar 2021", "25 de febrero de 2021".
-        let words = text.lowercased().replacingOccurrences(of: ",", with: " ").replacingOccurrences(of: " de ", with: " ")
-            .split(separator: " ").map { $0.trimmingCharacters(in: CharacterSet(charactersIn: ".")) }.filter { !$0.isEmpty }
+        let words = text.lowercased().replacingEvery(",", with: " ").replacingEvery(" de ", with: " ")
+            .split(separator: " ").map { $0.trimming(anyOf: ".") }.filter { !$0.isEmpty }
         guard words.count == 2 || words.count == 3 else { return nil }
         let year = words.count == 3 ? Int(words[2]) : defaultYear
         guard let year, words.count == 2 || words[2].count == 4 else { return nil }

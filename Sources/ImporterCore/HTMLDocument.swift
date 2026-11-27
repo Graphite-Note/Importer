@@ -6,8 +6,8 @@
  *              in Swift with no HTML library, so that it runs the same on Apple platforms, Linux and WebAssembly.
  *
  * Authors: Bahey Shalash
- * Version: 0.1
- * Date: 26/11/2026
+ * Version: 0.2
+ * Date: 27/11/2026
  */
 
 /// A node of an HTML tree: an element with its attributes and children, or text.
@@ -26,8 +26,15 @@ public final class HTMLNode {
     public let attributes: [String: String]
     /// The element's children in order.
     public private(set) var children: [HTMLNode] = []
+    #if hasFeature(Embedded)
+    /// The element the node is in, `nil` for the root. Embedded Swift has no weak references, so there the parent is
+    /// not retained, and a node must not be used once its document is gone: the importers read a node only while
+    /// they hold its document.
+    public private(set) unowned(unsafe) var parent: HTMLNode?
+    #else
     /// The element the node is in, `nil` for the root.
     public private(set) weak var parent: HTMLNode?
+    #endif
 
     init(kind: Kind, attributes: [String: String] = [:]) {
         self.kind = kind

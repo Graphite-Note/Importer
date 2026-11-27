@@ -6,8 +6,8 @@
  *              what was simplified on the way, what was left out and why, and what failed.
  *
  * Authors: Bahey Shalash
- * Version: 0.1
- * Date: 26/11/2026
+ * Version: 0.2
+ * Date: 27/11/2026
  */
 
 /// The record of one import, written as a note when the import ends.
@@ -121,5 +121,83 @@ public struct ImportReport: Equatable, Sendable {
     /// The report note's Markdown.
     public var markdown: String {
         MarkdownWriter.markdown(for: [.heading(level: 1, [.text(title)])] + blocks)
+    }
+}
+
+/// An error a host gives with the words the import report should show, such as a refused vault write in the
+/// WebAssembly build.
+public struct ReportedError: Error, Sendable, Equatable, CustomStringConvertible {
+    /// What went wrong, in words.
+    public let message: String
+
+    public init(_ message: String) {
+        self.message = message
+    }
+
+    public var description: String {
+        message
+    }
+}
+
+extension ImportReport {
+    /// The words an import report gives for `error`: the importers' own errors in sentences, any other as Swift
+    /// describes it. Embedded Swift can describe only the types it is told of (it casts to concrete types alone), so
+    /// an error of another type is named there by its having happened.
+    public static func text(describing error: any Error) -> String {
+        if let error = error as? ReportedError { return error.message }
+        if let error = error as? ZipArchiveError { return error.description }
+        if let error = error as? InflaterError { return error.description }
+        if let error = error as? RandomAccessSourceError { return error.description }
+        if let error = error as? ImportDestinationError { return error.description }
+        #if hasFeature(Embedded)
+        return "an error the WebAssembly build cannot describe"
+        #else
+        return String(describing: error)
+        #endif
+    }
+}
+
+extension ZipArchiveError: CustomStringConvertible {
+    public var description: String {
+        switch self {
+        case .notAZipArchive: return "the file is not a zip archive, or it was cut short"
+        case .damagedArchive(let detail): return "the archive is damaged (\(detail))"
+        case .encryptedEntry(let entry): return "\(entry) is encrypted"
+        case .unsupportedCompressionMethod(let entry, let method):
+            return "\(entry) is compressed with method \(method), which only stored (0) and deflated (8) entries are read with"
+        case .checksumMismatch(let entry): return "\(entry) is damaged: its size or checksum differs from the archive's record"
+        case .entryTooLarge(let entry, let size): return "\(entry) is too large to read whole (\(size) bytes)"
+        }
+    }
+}
+
+extension InflaterError: CustomStringConvertible {
+    public var description: String {
+        switch self {
+        case .reservedBlockType: return "the compressed data names a reserved block type"
+        case .storedLengthMismatch: return "a stored block's length and its complement disagree"
+        case .invalidCodeLengths: return "a block's code lengths describe no usable code"
+        case .invalidSymbol: return "the compressed data holds a code that does not exist"
+        case .distanceBeforeStart: return "the compressed data reaches back before its start"
+        case .truncatedInput: return "the compressed data ends before its last block"
+        }
+    }
+}
+
+extension RandomAccessSourceError: CustomStringConvertible {
+    public var description: String {
+        switch self {
+        case .rangeOutsideSource(let offset, let count, let size):
+            return "\(count) bytes from byte \(offset) were asked for, past the end of the \(size)-byte file"
+        }
+    }
+}
+
+extension ImportDestinationError: CustomStringConvertible {
+    public var description: String {
+        switch self {
+        case .fileAlreadyExists(let path): return "a file is already at \(path.description)"
+        case .unreadablePropertyTypes(let path): return "\(path.description) is not the JSON object Obsidian writes, so it was left as it is"
+        }
     }
 }
