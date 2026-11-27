@@ -7,7 +7,7 @@
  *              of the vault, followed page by page, stopped if asked, and its report note opened.
  *
  * Authors: Bahey Shalash
- * Version: 0.1
+ * Version: 0.2
  * Date: 27/11/2026
  */
 
@@ -38,6 +38,11 @@ function pluginVault(app) {
         list: (path) => app.vault.adapter.list(path === '/' ? '/' : normalizePath(path)),
         read: (path) => app.vault.adapter.read(normalizePath(path)),
         write: (path, text) => app.vault.adapter.write(normalizePath(path), text),
+        // Large attachments written in pieces, where the app's adapter can append.
+        appendBinary: typeof app.vault.adapter.appendBinary === 'function'
+            ? (path, data) => app.vault.adapter.appendBinary(normalizePath(path), data) : undefined,
+        rename: (path, newPath) => app.vault.adapter.rename(normalizePath(path), normalizePath(newPath)),
+        remove: (path) => app.vault.adapter.remove(normalizePath(path)),
     };
 }
 

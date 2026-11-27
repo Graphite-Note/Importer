@@ -7,7 +7,7 @@ Description: How the Importer is built: its layers, what the host provides, how 
              Importer.
 
 Authors: Bahey Shalash
-Version: 0.3
+Version: 0.4
 Date: 27/11/2026
 -->
 
@@ -50,7 +50,7 @@ The importer opens no file and sends no request on its own. The host passes:
 1. **Linked.** Graphite depends on this package with an exact version, as it depends on MermaidDiagrams. Import › From Notion… opens a native sheet. Nothing of the importer is made until that sheet opens, so it costs nothing at launch or at rest.
 2. **Downloadable.** Apple's guideline 2.5.2 refuses downloaded native code on iOS, but code run by WebKit is allowed, and Graphite's community-plugin runtime is a WKWebView. The package compiled to WebAssembly with the Swift SDK for WebAssembly, plus a small JavaScript plugin around it, becomes a plugin installed from Graphite's plugin list. Once it works on the iPad and the Mac, Graphite drops the linked copy and the app shrinks by the importer's size.
 
-   The module (`Plugin/`) is built with Embedded Swift for `wasm32-unknown-wasip1` as a WASI reactor: 890 KB, 347 KB gzip, 258 KB brotli, against 6.3 MB (1.9 MB gzip) with the whole standard library and 53.6 MB with Foundation (Graphite's section 7 spike). It is carried inside the plugin's `main.js`, as plugins are installed from `main.js` and `manifest.json` alone. Each read, write and request is one host call (`importer_host.call`) that JavaScript answers later through `importer_resume`, so the import's async Swift code waits on the web view without blocking it. The picked files are read by range with `Blob.slice`, compressed `Part-N` zips are inflated into blobs the web view may keep on disk, and the vault is written through the plugin API, each attachment whole when its last piece arrives, as the plugin API has no write by pieces.
+   The module (`Plugin/`) is built with Embedded Swift for `wasm32-unknown-wasip1` as a WASI reactor: 890 KB, 347 KB gzip, 258 KB brotli, against 6.3 MB (1.9 MB gzip) with the whole standard library and 53.6 MB with Foundation (Graphite's section 7 spike). It is carried inside the plugin's `main.js`, as plugins are installed from `main.js` and `manifest.json` alone. Each read, write and request is one host call (`importer_host.call`) that JavaScript answers later through `importer_resume`, so the import's async Swift code waits on the web view without blocking it. The picked files are read by range with `Blob.slice`, compressed `Part-N` zips are inflated into blobs the web view may keep on disk, and the vault is written through the plugin API. A file of up to 16 MB is written whole when its last piece arrives. A larger one is added in pieces of 16 MB with `adapter.appendBinary` to a hidden file beside it (`.week-1.mp4.notion-import-part-3`), renamed to its place once complete, and removed if the import ends first, so no write exceeds what a host accepts in one message (64 MB in Graphite) and nothing half written takes a file's name. An app whose adapter has no `appendBinary` gets every file whole.
 
 ## Notion
 
@@ -93,6 +93,6 @@ Swift Testing, on macOS and Linux, and a WebAssembly build of `ImporterCore` and
 ## Known limits
 
 - Embedded Swift has no weak references: there `HTMLNode.parent` is `unowned(unsafe)`, so a node must not outlive its document, which the importers never let happen. Embedded Swift also describes only the errors it is told of: a host's own error reaches the report as `ReportedError` with its words.
-- The plugin API writes a file whole, so the plugin holds an attachment in the web view's memory until its last piece, about twice its size at the write.
+- Without `appendBinary` the plugin API writes a file whole, so the plugin holds an attachment in the web view's memory until its last piece, about twice its size at the write. With it, an attachment costs the web view about 16 MB at a time.
 - Pages are read whole (refused over 256 MB each), attachments in 64 KB pieces. Real exports of 139 MB import in about 8 s with 160 MB of memory at most on a Mac.
 - Importing again writes beside the earlier import (`Course 2.md`), never over it. Updating only the notes nobody edited is planned with the API import.

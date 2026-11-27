@@ -6,7 +6,7 @@
  *              plugin's import runs in Node and its result can be compared with the linked package's.
  *
  * Authors: Bahey Shalash
- * Version: 0.1
+ * Version: 0.2
  * Date: 27/11/2026
  */
 
@@ -16,10 +16,14 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 class FolderVault {
-    constructor(folder) {
+    /// `canAppend` false leaves out `appendBinary`, as an app whose adapter has none, so files are written whole.
+    constructor(folder, { canAppend = true } = {}) {
         this.folder = folder;
         this.configDir = '.obsidian';
         this.writes = 0;
+        /// The most bytes one call wrote.
+        this.largestWrite = 0;
+        if (!canAppend) this.appendBinary = undefined;
     }
 
     full(vaultPath) {
@@ -39,7 +43,26 @@ class FolderVault {
         const target = this.full(vaultPath);
         if (fs.existsSync(target)) throw new Error('File already exists.');
         fs.writeFileSync(target, Buffer.from(data), { flag: 'wx' });
+        this.counted(data.byteLength);
+    }
+
+    async appendBinary(vaultPath, data) {
+        fs.appendFileSync(this.full(vaultPath), Buffer.from(data));
+        this.counted(data.byteLength);
+    }
+
+    async rename(vaultPath, newPath) {
+        if (fs.existsSync(this.full(newPath))) throw new Error('Destination file already exists!');
+        fs.renameSync(this.full(vaultPath), this.full(newPath));
+    }
+
+    async remove(vaultPath) {
+        fs.rmSync(this.full(vaultPath));
+    }
+
+    counted(byteCount) {
         this.writes += 1;
+        this.largestWrite = Math.max(this.largestWrite, byteCount);
     }
 
     async list(vaultPath) {
@@ -58,7 +81,7 @@ class FolderVault {
 
     async write(vaultPath, text) {
         fs.writeFileSync(this.full(vaultPath), text);
-        this.writes += 1;
+        this.counted(Buffer.byteLength(text));
     }
 }
 

@@ -7,7 +7,7 @@
  *              plugin API, never over a file already there) and temporary files kept as blobs.
  *
  * Authors: Bahey Shalash
- * Version: 0.1
+ * Version: 0.2
  * Date: 27/11/2026
  */
 
@@ -66,11 +66,24 @@ function joinedBuffer(pieces) {
 /// A failure the module reports with these words.
 class HostFailure extends Error {}
 
+/// A file larger than this is written in pieces of about this size when the vault can append (`appendBinary`),
+/// so that an attachment of hundreds of MB is never held whole, and no write exceeds what a host accepts in one
+/// message (64 MB in Graphite).
+const streamedPieceBytes = 16 * 1048576;
+
+/// The hidden file in the same folder that a file written in pieces grows in, until it is complete and renamed.
+function partPath(path, handle) {
+    const slash = path.lastIndexOf('/');
+    return path.slice(0, slash + 1) + '.' + path.slice(slash + 1) + '.notion-import-part-' + handle;
+}
+
 /**
  * The vault as the engine writes it. `vault` gives, as the plugin API does: `exists(path)`, `createFolder(path)`,
  * `createBinary(path, arrayBuffer)` (refusing an existing file), `list(path)` (`{ files, folders }` of full paths),
- * `read(path)` and `write(path, text)` for text, and `configDir`. `request`, when given, sends a request as
- * `requestUrl` does.
+ * `read(path)` and `write(path, text)` for text, and `configDir`. When it also gives `appendBinary(path,
+ * arrayBuffer)`, `rename(path, newPath)` (refusing an existing destination) and `remove(path)`, a large file is
+ * written in pieces into a hidden file beside it, renamed once complete, and removed if the import ends first.
+ * `request`, when given, sends a request as `requestUrl` does.
  */
 class NotionImportEngine {
     constructor(moduleBytes, vault, request) {
@@ -80,12 +93,49 @@ class NotionImportEngine {
         this.instance = null;
         this.sources = [];
         this.writers = new Map();
+        /// The hidden files of files written in pieces that the import did not finish, removed when it ends.
+        this.unfinishedParts = new Set();
         this.temporaryFiles = new Map();
         this.pendingPaths = new Set();
         this.nextHandle = 1;
         this.hostCallCount = 0;
         this.isBroken = false;
         this.isStopRequested = false;
+    }
+
+    canWriteInPieces() {
+        return typeof this.vault.appendBinary === 'function' && typeof this.vault.rename === 'function'
+            && typeof this.vault.remove === 'function';
+    }
+
+    /// Adds the pieces received so far to the file's hidden part, which the first append makes (through the
+    /// adapter, since the vault's own API keeps out of hidden files).
+    async writePieces(writer, handle) {
+        if (!writer.partPath) {
+            writer.partPath = partPath(writer.path, handle);
+            // Left by an import that ended without removing it (the app was closed meanwhile).
+            if (await this.vault.exists(writer.partPath)) await this.vault.remove(writer.partPath);
+        }
+        if (writer.pieceBytes === 0) return;
+        const contents = joinedBuffer(writer.pieces);
+        writer.pieces = [];
+        writer.pieceBytes = 0;
+        await this.vault.appendBinary(writer.partPath, contents);
+    }
+
+    /// Removes the hidden parts of files the import did not finish, so nothing half written stays in the vault.
+    async removeUnfinishedParts() {
+        for (const writer of this.writers.values()) {
+            if (writer.partPath) this.unfinishedParts.add(writer.partPath);
+        }
+        for (const path of this.unfinishedParts) {
+            try {
+                if (await this.vault.exists(path)) await this.vault.remove(path);
+            } catch (error) {
+                // Left for the next import to remove: the import's own outcome is what is reported.
+            }
+        }
+        this.unfinishedParts.clear();
     }
 
     /// The module's memory as bytes, read again after every call that may grow it.
@@ -193,7 +243,7 @@ class NotionImportEngine {
                     engine.hostCallCount += 1;
                     Promise.resolve()
                         .then(() => engine.answer(kind, argumentsGiven, bytes))
-                        .catch((error) => ({ status: failed, bytes: textEncoder.encode(engine.reason(error)) }))
+                        .catch((error) => ({ status: failed, bytes: textEncoder.encode(engine.clause(error)) }))
                         .then((answer) => engine.resume(request, answer));
                 },
                 progress(done, total) {
@@ -212,6 +262,12 @@ class NotionImportEngine {
     reason(error) {
         if (error && typeof error.message === 'string' && error.message !== '') return error.message;
         return String(error);
+    }
+
+    /// The reason as the report quotes it, inside its own sentence: without the final full stop that the app's
+    /// messages end with ("…could not be copied: The disk is full." rather than "full..").
+    clause(error) {
+        return this.reason(error).replace(/\.$/, '');
     }
 
     /// Gives the module its answer. A trap (a Swift runtime error) ends the import: the instance cannot be used again.
@@ -270,26 +326,36 @@ class NotionImportEngine {
                 if (this.pendingPaths.has(path) || await this.vault.exists(path)) return { status: fileExists, bytes: new Uint8Array(0) };
                 const handle = String(this.nextHandle++);
                 this.pendingPaths.add(path);
-                this.writers.set(handle, { path, pieces: [] });
+                this.writers.set(handle, { path, pieces: [], pieceBytes: 0, partPath: null });
                 return done(textEncoder.encode(handle));
             }
             case HostKind.appendToFile: {
                 const writer = this.writers.get(given[0]);
                 if (!writer) throw new HostFailure('the import wrote to a file it had not made');
                 writer.pieces.push(bytes);
+                writer.pieceBytes += bytes.length;
+                if (writer.pieceBytes >= streamedPieceBytes && this.canWriteInPieces()) await this.writePieces(writer, given[0]);
                 return done();
             }
             case HostKind.closeFile: {
                 const writer = this.writers.get(given[0]);
                 if (!writer) throw new HostFailure('the import closed a file it had not made');
                 this.writers.delete(given[0]);
-                // The plugin API writes a file whole: the pieces are joined once, when the file is complete.
-                const contents = joinedBuffer(writer.pieces);
-                writer.pieces = [];
                 try {
-                    await this.vault.createBinary(writer.path, contents);
+                    if (writer.partPath) {
+                        // Written in pieces: the rest added, then the complete file put in its place.
+                        await this.writePieces(writer, given[0]);
+                        await this.vault.rename(writer.partPath, writer.path);
+                        writer.partPath = null;
+                    } else {
+                        // Small enough, or a vault that cannot append: the pieces are joined once, the file written whole.
+                        const contents = joinedBuffer(writer.pieces);
+                        writer.pieces = [];
+                        await this.vault.createBinary(writer.path, contents);
+                    }
                 } finally {
                     this.pendingPaths.delete(writer.path);
+                    if (writer.partPath) this.unfinishedParts.add(writer.partPath);
                 }
                 return done();
             }
@@ -422,7 +488,11 @@ class NotionImportEngine {
             this.isBroken = true;
             this.finish(failed, ['the importer stopped on an error of its own (' + this.reason(error) + ')']);
         }
-        return result;
+        try {
+            return await result;
+        } finally {
+            await this.removeUnfinishedParts();
+        }
     }
 
     /// Stops the import at its next page. Its report is still written, and the promise resolves with `wasCancelled`.
