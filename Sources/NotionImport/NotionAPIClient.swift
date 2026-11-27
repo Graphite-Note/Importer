@@ -204,6 +204,26 @@ public actor NotionAPIClient {
         return response.body
     }
 
+    /// The bytes of a file Notion links to, in ranges of `pieceSize` bytes handed to `receive` one after another, so a
+    /// file of gigabytes is never held whole. A server that ignores ranges gives the whole file as one piece.
+    public func download(_ url: String, pieceSize: Int = 8 * 1_048_576, receive: ([UInt8]) async throws -> Void) async throws {
+        var start = 0
+        while true {
+            let range = NotionHeader(name: "Range", value: "bytes=\(start)-\(start + pieceSize - 1)")
+            let response = try await send(NotionRequest(method: "GET", url: url, headers: [range], isNotionAPI: false))
+            if response.status == 416 { return }
+            guard (200..<300).contains(response.status) else {
+                throw NotionAPIError.refused(status: response.status, message: "the file at \(url) was not given")
+            }
+            try await receive(response.body)
+            // 200: the whole file. 206: a range of it, `Content-Range: bytes 0-8388607/20000000` saying the total.
+            guard response.status == 206, let total = response.header("Content-Range")?.pieces(separatedBy: "/").last.flatMap({ Int($0.trimmingSpaces()) })
+            else { return }
+            start += response.body.count
+            if start >= total || response.body.isEmpty { return }
+        }
+    }
+
     // MARK: Sending
 
     private func apiHeaders(hasBody: Bool) -> [NotionHeader] {
@@ -262,7 +282,7 @@ public actor NotionAPIClient {
         let started = await clock.nowMilliseconds()
         var wait = policy.firstWaitMilliseconds
         while true {
-            try Task.checkCancellation()
+            if Task.isCancelled { throw CancellationError() }
             if request.isNotionAPI { try await takeRequest() }
             sentRequestCount += 1
             let response: NotionResponse

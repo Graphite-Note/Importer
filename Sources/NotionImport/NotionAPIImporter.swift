@@ -348,7 +348,6 @@ struct NotionAPIImportRun: NotionAPIPropertyResolving {
         var madeFolder = false
         for file in files where fileTargets[file.url] == nil {
             do {
-                let bytes = try await client.download(file.url)
                 if !madeFolder {
                     try await destination.createFolder(at: folder)
                     if folderNames[folder] == nil { folderNames[folder] = VaultFolderNames(existingNames: try await destination.names(inFolderAt: folder)) }
@@ -359,7 +358,9 @@ struct NotionAPIImportRun: NotionAPIPropertyResolving {
                 let stem = VaultFileName.stem(forTitle: parts.count > 1 ? parts.dropLast().joined(separator: ".") : file.name)
                 let name = folderNames[folder, default: VaultFolderNames()].claim(stem: stem, pathExtension: pathExtension)
                 guard let filePath = folder.appending(name) else { continue }
-                try await destination.writeNewFile(bytes, at: filePath)
+                let writer = try await destination.createNewFile(at: filePath)
+                try await client.download(file.url) { piece in try await writer.append(piece) }
+                try await writer.close()
                 report.recordWritten(.attachment, at: filePath)
                 fileTargets[file.url] = filePath.description
             } catch is CancellationError {

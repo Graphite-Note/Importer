@@ -127,6 +127,25 @@ struct NotionAPITests {
         #expect(urls[1] == "https://api.notion.com/v1/blocks/x/children?page_size=100&start_cursor=c%201")
     }
 
+    @Test("A file is downloaded in ranges, never whole, and a server that ignores ranges gives it at once")
+    func rangedDownload() async throws {
+        let clock = VirtualClock()
+        let file = (0..<25).map { UInt8($0) }
+        let transport = ScriptedTransport(clock: clock) { request, _ in
+            let range = request.headers.first { $0.name == "Range" }?.value ?? ""
+            let bounds = range.dropFirst("bytes=".count).split(separator: "-").compactMap { Int($0) }
+            let start = bounds[0], end = min(bounds[1], file.count - 1)
+            return NotionResponse(status: 206, headers: [NotionHeader(name: "Content-Range", value: "bytes \(start)-\(end)/\(file.count)")],
+                                  body: Array(file[start...end]))
+        }
+        let client = NotionAPIClient(transport: transport, clock: clock)
+        var pieces: [[UInt8]] = []
+        try await client.download("https://files.example.com/big.bin", pieceSize: 10) { pieces.append($0) }
+        #expect(pieces.map(\.count) == [10, 10, 5])
+        #expect(pieces.flatMap { $0 } == file)
+        #expect(await transport.requests.allSatisfy { !$0.request.isNotionAPI })
+    }
+
     // MARK: Pages and databases from the fixtures
 
     @Test("The example page converts block by block as recorded, close to Obsidian Importer's note")
