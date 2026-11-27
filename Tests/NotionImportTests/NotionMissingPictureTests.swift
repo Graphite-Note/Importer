@@ -49,4 +49,31 @@ struct NotionMissingPictureTests {
         #expect(findings.contains("a picture, untitled, which the export does not hold, was kept as its name"))
         #expect(findings.contains("a picture, gone too.png, which the export does not hold, was kept as its name"))
     }
+
+    @Test("A picture in a folder whose name was unpacked with another encoding is still found by its page's identifier")
+    func pictureFoundByItsFolderIdentifier() async throws {
+        let hyphenated = NotionPageReader.hyphenatedIdentifier(Self.identifier)!
+        // The link names the folder as Notion wrote it, the export holds it as an unzip reading UTF-8 as CP866 left it.
+        let folder = "Run%20%E2%80%9CBlue%E2%80%9D%20\(Self.identifier)"
+        let html = """
+            <html><head><meta charset="utf-8"/><title>Run “Blue”</title></head><body><article id="\(hyphenated)" class="page sans">\
+            <header><h1 class="page-title">Run “Blue”</h1></header><div class="page-body">\
+            <figure id="a1" class="image"><a href="\(folder)/shoe.jpg"><img src="\(folder)/shoe.jpg"/></a></figure>\
+            </div></article></body></html>
+            """
+        let export = ZipBuilder(entries: [
+            .stored("Export/Run тАЬBlueтАЭ \(Self.identifier).html", text: html),
+            .stored("Export/Run тАЬBlueтАЭ \(Self.identifier)/shoe.jpg", Data([0xFF, 0xD8, 0xFF])),
+        ]).data
+        let tree = try await ExportFileTree.reading(zipArchives: [DataRandomAccessSource(export)], named: ["Export.zip"],
+                                                    temporaryStorage: MemoryTemporaryStorage())
+        let vault = try TemporaryVault()
+        defer { vault.remove() }
+        let options = NotionHTMLImportOptions(destinationFolder: VaultPath(components: ["Notion"])!, exportName: "Export.zip",
+                                              importDate: "2026-11-27", exportYear: 2026)
+        let result = try await NotionHTMLImporter.importExport(tree, into: FolderImportDestination(vaultFolder: vault.folder), options: options)
+        let note = try vault.text("Notion/Run “Blue”.md")
+        #expect(note == "![[shoe.jpg]]\n")
+        #expect(!result.report.findings.map(\.message).contains { $0.contains("does not hold") })
+    }
 }
