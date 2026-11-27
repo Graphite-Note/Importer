@@ -7,12 +7,13 @@
  *              own Notion exports.
  *
  * Authors: Bahey Shalash
- * Version: 0.1
- * Date: 26/11/2026
+ * Version: 0.2
+ * Date: 27/11/2026
  */
 
 import Foundation
 @testable import ImporterCore
+import ImporterFileSystem
 import ImporterTestSupport
 import Testing
 
@@ -81,7 +82,7 @@ struct ZipArchiveTests {
             .stored("Ordner/Übersicht.md", text: "Grüße"),
             .deflated("rows.txt", contents: Data(dynamicText.utf8), deflated: compressed),
         ]).data
-        let archive = try await ZipArchive.open(DataRandomAccessSource(data))
+        let archive = try await ZipArchive.open(MemoryRandomAccessSource(Array(data)))
         #expect(archive.entries.map(\.path) == ["Ordner/Übersicht.md", "rows.txt"])
         #expect(try await read(archive, "Ordner/Übersicht.md") == "Grüße")
         #expect(try await read(archive, "rows.txt") == dynamicText)
@@ -90,7 +91,7 @@ struct ZipArchiveTests {
     @Test("A zip64 archive reads its sizes, offsets and entry count from the zip64 records")
     func zip64() async throws {
         let data = ZipBuilder(entries: [.stored("a.txt", text: "first"), .stored("b/c.txt", text: "second")], usesZip64: true).data
-        let archive = try await ZipArchive.open(DataRandomAccessSource(data))
+        let archive = try await ZipArchive.open(MemoryRandomAccessSource(Array(data)))
         #expect(archive.entries.map(\.path) == ["a.txt", "b/c.txt"])
         #expect(archive.entries.map(\.uncompressedSize) == [5, 6])
         #expect(try await read(archive, "b/c.txt") == "second")
@@ -101,18 +102,18 @@ struct ZipArchiveTests {
         var data = ZipBuilder(entries: [.stored("a.txt", text: "abcdef")]).data
         let position = try #require(data.range(of: Data("abcdef".utf8))).lowerBound
         data[position] = UInt8(ascii: "X")
-        let archive = try await ZipArchive.open(DataRandomAccessSource(data))
+        let archive = try await ZipArchive.open(MemoryRandomAccessSource(Array(data)))
         await #expect(throws: ZipArchiveError.checksumMismatch("a.txt")) { try await archive.contents(of: archive.entries[0]) }
     }
 
     @Test("Something that is not a zip, or a zip cut short, is refused")
     func notAZip() async throws {
         await #expect(throws: ZipArchiveError.notAZipArchive) {
-            try await ZipArchive.open(DataRandomAccessSource(Data("<html></html>".utf8)))
+            try await ZipArchive.open(MemoryRandomAccessSource(Array(Data("<html></html>".utf8))))
         }
         let data = ZipBuilder(entries: [.stored("a.txt", text: "abcdef")]).data
         await #expect(throws: ZipArchiveError.notAZipArchive) {
-            try await ZipArchive.open(DataRandomAccessSource(data.prefix(data.count - 30)))
+            try await ZipArchive.open(MemoryRandomAccessSource(Array(data.prefix(data.count - 30))))
         }
     }
 
@@ -123,14 +124,14 @@ struct ZipArchiveTests {
             .stored("C:/drive.md", text: "x"), .stored("link", Data("/etc".utf8), unixMode: 0o120777),
             .stored("fine/page.md", text: "x"),
         ]).data
-        let archive = try await ZipArchive.open(DataRandomAccessSource(data))
+        let archive = try await ZipArchive.open(MemoryRandomAccessSource(Array(data)))
         #expect(archive.entries.map(\.isUnsafe) == [true, true, true, true, true, false])
     }
 
     @Test("Names without the UTF-8 flag that are not UTF-8 read as code page 437")
     func codePage437() {
-        #expect(ZipArchive.decodeName(Data([0x81, 0x62, 0x65, 0x72]), isUTF8: false) == "über")
-        #expect(ZipArchive.decodeName(Data("naïve".utf8), isUTF8: false) == "naïve")
+        #expect(ZipArchive.decodeName([0x81, 0x62, 0x65, 0x72], isUTF8: false) == "über")
+        #expect(ZipArchive.decodeName(Array("naïve".utf8), isUTF8: false) == "naïve")
     }
 
     @Test("Obsidian Importer's HTML export: a zip holding a deflated Part-1 zip, read through temporary storage")
@@ -154,7 +155,7 @@ struct ZipArchiveTests {
         let outer = ZipBuilder(entries: [.stored("Export-Part-1.zip", inner), .stored("__MACOSX/._Export", text: "noise")]).data
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("importer-tests-\(UUID().uuidString)")
         let storage = try FolderTemporaryStorage(folder: folder)
-        let tree = try await ExportFileTree.reading(zipArchives: [DataRandomAccessSource(outer)], named: ["export.zip"],
+        let tree = try await ExportFileTree.reading(zipArchives: [MemoryRandomAccessSource(Array(outer))], named: ["export.zip"],
                                                     temporaryStorage: storage)
         #expect(tree.files.map(\.path) == ["Export/Page 0123456789abcdef0123456789abcdef.html"])
         #expect(String(decoding: try await tree.files[0].contents(), as: UTF8.self) == "<p>x</p>")

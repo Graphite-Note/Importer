@@ -3,20 +3,18 @@
  * --------------------------
  * Layer: Core
  * Description: The files of an export, whatever holds them: one or more zip archives (with the zips nested inside
- *              them read the same way) or a folder the export was unpacked into. Each file is read piece by piece
- *              when its turn comes.
+ *              them read the same way) or a folder the export was unpacked into (read by ImporterFileSystem). Each
+ *              file is read piece by piece when its turn comes.
  *
  * Authors: Bahey Shalash
- * Version: 0.1
- * Date: 26/11/2026
+ * Version: 0.2
+ * Date: 27/11/2026
  */
-
-import Foundation
 
 /// A reader of one export file's bytes, piece by piece.
 public protocol ExportFileReading {
     /// The next piece, `nil` once the file is read whole.
-    mutating func read() async throws -> Data?
+    mutating func read() async throws -> [UInt8]?
 }
 
 extension ZipEntryReader: ExportFileReading {}
@@ -60,12 +58,13 @@ public struct ExportFile: Sendable {
     }
 
     /// All of the file's bytes, refused when it is larger than `maximumSize`.
-    public func contents(maximumSize: UInt64 = 256 * 1024 * 1024) async throws -> Data {
+    public func contents(maximumSize: UInt64 = 256 * 1024 * 1024) async throws -> [UInt8] {
         guard size <= maximumSize else { throw ZipArchiveError.entryTooLarge(entry: origin, size: size) }
         var reader = try await openReader()
-        var contents = Data()
+        var contents: [UInt8] = []
+        contents.reserveCapacity(Int(size))
         while let piece = try await reader.read() {
-            contents.append(piece)
+            contents.append(contentsOf: piece)
         }
         return contents
     }
@@ -77,6 +76,11 @@ public struct SkippedExportEntry: Sendable, Equatable {
     public let origin: String
     /// Why it is not read.
     public let reason: String
+
+    public init(origin: String, reason: String) {
+        self.origin = origin
+        self.reason = reason
+    }
 }
 
 /// The files of an export.
@@ -148,7 +152,7 @@ public struct ExportFileTree: Sendable {
         if entry.compressionMethod == 0 {
             // Stored: the nested zip's bytes lie as they are in the outer one. Its CRC-32 is checked by the reads of
             // its own entries, which have checksums of their own.
-            let header = try await archive.source.readExactly(at: entry.localHeaderOffset, count: 30)
+            let header = try await readExactly(from: archive.source, at: entry.localHeaderOffset, count: 30)
             let nameLength = UInt64(header[header.startIndex + 26]) | UInt64(header[header.startIndex + 27]) << 8
             let extraLength = UInt64(header[header.startIndex + 28]) | UInt64(header[header.startIndex + 29]) << 8
             let dataOffset = entry.localHeaderOffset + 30 + nameLength + extraLength
@@ -165,60 +169,9 @@ public struct ExportFileTree: Sendable {
         return try await file.finish()
     }
 
-    /// The files of the folder at `folder`, an export already unpacked. Links are skipped, so nothing outside the
-    /// folder is read.
-    public static func reading(folder: URL) throws -> ExportFileTree {
-        var files: [ExportFile] = []
-        var skipped: [SkippedExportEntry] = []
-        let keys: [URLResourceKey] = [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]
-        guard let enumerator = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: keys) else {
-            return ExportFileTree(files: [], skippedEntries: [])
-        }
-        let basePath = folder.standardizedFileURL.path
-        while let url = enumerator.nextObject() as? URL {
-            let values = try url.resourceValues(forKeys: Set(keys))
-            let fullPath = url.standardizedFileURL.path
-            guard fullPath.hasPrefix(basePath) else { continue }
-            let relative = fullPath.dropFirst(basePath.count).split(separator: "/").map(String.init)
-            if isMacOSMetadata(relative) { continue }
-            if values.isSymbolicLink == true {
-                skipped.append(SkippedExportEntry(origin: relative.joined(separator: "/"), reason: "it is a link"))
-                enumerator.skipDescendants()
-                continue
-            }
-            guard values.isRegularFile == true else { continue }
-            let size = UInt64(values.fileSize ?? 0)
-            files.append(ExportFile(pathComponents: relative, size: size, origin: relative.joined(separator: "/")) {
-                try FolderFileReader(url: url)
-            })
-        }
-        files.sort { $0.path < $1.path }
-        return ExportFileTree(files: files, skippedEntries: skipped)
-    }
-
     /// The Finder's own files, which archivers on macOS add and which are no part of an export.
-    static func isMacOSMetadata(_ components: [String]) -> Bool {
+    public static func isMacOSMetadata(_ components: [String]) -> Bool {
         components.first == "__MACOSX" || components.last == ".DS_Store" || components.last?.hasPrefix("._") == true
     }
 }
 
-/// A file on disk read piece by piece.
-struct FolderFileReader: ExportFileReading {
-    private let handle: FileHandle
-    private var isDone = false
-
-    init(url: URL) throws {
-        handle = try FileHandle(forReadingFrom: url)
-    }
-
-    mutating func read() async throws -> Data? {
-        guard !isDone else { return nil }
-        let piece = try handle.read(upToCount: ZipEntryReader.pieceSize) ?? Data()
-        if piece.isEmpty {
-            isDone = true
-            try handle.close()
-            return nil
-        }
-        return piece
-    }
-}

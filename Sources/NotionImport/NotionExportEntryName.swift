@@ -6,8 +6,8 @@
  *              title it starts with and the page's identifier it ends with.
  *
  * Authors: Bahey Shalash
- * Version: 0.1
- * Date: 26/11/2026
+ * Version: 0.2
+ * Date: 27/11/2026
  */
 
 /// The name of an entry of Notion's HTML export, read.
@@ -44,7 +44,7 @@ public struct NotionExportEntryName: Equatable, Sendable {
             stem = stem.dropLast(4)
         }
         let digits = stem.suffix(32)
-        guard digits.count == 32, digits.allSatisfy(\.isHexDigit) else { return nil }
+        guard digits.count == 32, digits.allSatisfy({ $0.isHexDigit }) else { return nil }
         let beforeDigits = stem.dropLast(32)
         guard beforeDigits.isEmpty || beforeDigits.hasSuffix(" ") else { return nil }
         self.title = String(beforeDigits.dropLast(beforeDigits.isEmpty ? 0 : 1))

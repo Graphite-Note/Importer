@@ -6,14 +6,15 @@
  *              never replaces one.
  *
  * Authors: Bahey Shalash
- * Version: 0.1
- * Date: 26/11/2026
+ * Version: 0.2
+ * Date: 27/11/2026
  */
 
 import Foundation
 import Testing
 
 @testable import ImporterCore
+import ImporterFileSystem
 
 struct VaultPathAndDestinationTests {
     @Test func namesThatLeaveTheirFolderAreRefused() {
@@ -41,11 +42,11 @@ struct VaultPathAndDestinationTests {
         let note = try #require(folder.appending("Week 1.md"))
 
         try await destination.createFolder(at: folder)
-        try await destination.writeNewFile(Data("# Week 1\n".utf8), at: note)
+        try await destination.writeNewFile(Array("# Week 1\n".utf8), at: note)
         #expect(try await destination.names(inFolderAt: folder) == ["Week 1.md"])
 
         await #expect(throws: ImportDestinationError.fileAlreadyExists(note)) {
-            try await destination.writeNewFile(Data("replaced".utf8), at: note)
+            try await destination.writeNewFile(Array("replaced".utf8), at: note)
         }
         let written = try String(contentsOf: vaultFolder.appendingPathComponent("Notion/Course/Week 1.md"), encoding: .utf8)
         #expect(written == "# Week 1\n")

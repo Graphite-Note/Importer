@@ -8,12 +8,13 @@
  *              which is refused.
  *
  * Authors: Bahey Shalash
- * Version: 0.1
- * Date: 26/11/2026
+ * Version: 0.2
+ * Date: 27/11/2026
  */
 
 import Foundation
 import ImporterCore
+import ImporterFileSystem
 import ImporterTestSupport
 @testable import NotionImport
 import Testing
