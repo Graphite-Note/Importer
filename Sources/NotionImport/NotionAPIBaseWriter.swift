@@ -2,12 +2,12 @@
  * File: NotionAPIBaseWriter.swift
  * -------------------------------
  * Layer: Notion
- * Description: A Notion database read through the API, written as an Obsidian base: its formulas Bases can compute,
+ * Description: A Notion database read through the API, written as an Obsidian base: its formulas and rollups Bases can compute,
  *              and its table, board, gallery and list views as Bases table, Kanban, cards and list views with the
  *              properties they show, their groups, sorts and filters where Bases can express them.
  *
  * Authors: Bahey Shalash
- * Version: 0.1
+ * Version: 0.2
  * Date: 27/11/2026
  */
 
@@ -33,11 +33,14 @@ enum NotionAPIBaseWriter {
             switch property["type"]?.string {
             case "title":
                 titleName = name
-            case "formula":
+            case "formula", "rollup":
                 if formulas[name] != nil {
                     allColumns.append("formula." + name)
                 } else {
-                    note(.simplified, "the formula “\(name)” uses what Bases cannot compute, so each note holds its value when imported")
+                    // A rollup's reason is reported where it is converted.
+                    if property["type"]?.string == "formula" {
+                        note(.simplified, "the formula “\(name)” uses what Bases cannot compute, so each note holds its value when imported")
+                    }
                     allColumns.append(column(for: name, type: "formula"))
                 }
             case "button":
@@ -63,7 +66,7 @@ enum NotionAPIBaseWriter {
             for shown in configuration["properties"]?.elements ?? [] where shown["visible"]?.bool != false {
                 let propertyName = shown["property_name"]?.string ?? shown["property_id"]?.string.flatMap { names[$0] } ?? ""
                 guard !propertyName.isEmpty, propertyName != titleName, let type = schema[propertyName]?["type"]?.string else { continue }
-                visible.append(type == "formula" && formulas[propertyName] != nil ? "formula." + propertyName : column(for: propertyName, type: type))
+                visible.append(formulas[propertyName] != nil && isComputed(type) ? "formula." + propertyName : column(for: propertyName, type: type))
             }
             var baseView: BaseFile.View
             switch view["type"]?.string ?? configuration["type"]?.string ?? "table" {
@@ -74,7 +77,7 @@ enum NotionAPIBaseWriter {
                 let groupBy = configuration["group_by"] ?? .null
                 if let property = groupBy["property_name"]?.string ?? groupBy["property_id"]?.string.flatMap({ names[$0] }) {
                     let type = schema[property]?["type"]?.string ?? ""
-                    let isFormula = type == "formula" && formulas[property] != nil
+                    let isFormula = isComputed(type) && formulas[property] != nil
                     let sort = groupBy["sort"]?["type"]?.string ?? groupBy["group_by"]?["sort"]?["type"]?.string
                     baseView.groupBy = (isFormula ? "formula." + property : "note." + column(for: property, type: type), sort == "descending" ? "DESC" : "ASC")
                     if sort == "manual" || sort == nil, type == "select" || type == "status" {
@@ -106,7 +109,9 @@ enum NotionAPIBaseWriter {
                     continue
                 }
                 let type = schema[property]?["type"]?.string ?? ""
-                baseView.sort.append((type == "title" ? "file.name" : "note." + column(for: property, type: type), sort["direction"]?.string == "descending" ? "DESC" : "ASC"))
+                let sorted = type == "title" ? "file.name"
+                    : isComputed(type) && formulas[property] != nil ? "formula." + property : "note." + column(for: property, type: type)
+                baseView.sort.append((sorted, sort["direction"]?.string == "descending" ? "DESC" : "ASC"))
             }
             if let filter = configuration["filter"] {
                 if let expression = filterExpression(filter, schema: schema) {
@@ -120,6 +125,11 @@ enum NotionAPIBaseWriter {
         if baseViews.isEmpty { baseViews.append(BaseFile.View(type: "table", name: "Table", order: allColumns)) }
         let sortedFormulas = formulas.sorted { $0.key < $1.key }.map { (name: $0.key, expression: $0.value) }
         return (BaseFile(folder: rowsFolder, displayNames: displayNames, views: baseViews, formulas: sortedFormulas), findings)
+    }
+
+    /// Whether a property of `type` is computed: a formula or a rollup, which the base computes when it can.
+    static func isComputed(_ type: String) -> Bool {
+        type == "formula" || type == "rollup"
     }
 
     /// The property a column shows: `tags` for a multi-select called Tags, as the notes name it.

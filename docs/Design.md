@@ -7,7 +7,7 @@ Description: How the Importer is built: its layers, what the host provides, how 
              Importer.
 
 Authors: Bahey Shalash
-Version: 0.4
+Version: 0.5
 Date: 27/11/2026
 -->
 
@@ -28,7 +28,7 @@ Decided 2026-11-26: the importers are written in Swift in this repository instea
 | Target | Holds |
 | --- | --- |
 | `ImporterCore` | Vault file names (`VaultFileName`), the names taken in a folder (`VaultFolderNames`), vault paths (`VaultPath`), the destination (`ImportDestination`). The source read by range (`RandomAccessSource`), zip archives with zip64 (`ZipArchive`), a DEFLATE decoder (`Inflater`) and CRC-32, the files of an export across its parts and nested zips (`ExportFileTree`), temporary storage for compressed nested zips (`TemporaryStorage`). An HTML reader (`HTMLDocument`), CSV tables (`CSVTable`). The model of a note (`MarkdownBlock`, `MarkdownInline`) and its writer (`MarkdownWriter`), front matter and property types (`FrontMatter`, `PropertyType`), bases (`BaseFile`), the import report (`ImportReport`). The text functions the importers took from Foundation, written for the standard library (`TextFunctions`: trimming, replacing, splitting and finding text scalar by scalar, percent escapes, web addresses), each tested against Foundation's. |
-| `NotionImport` | Notion's export names (`NotionExportEntryName`), the HTML export (`NotionHTMLImporter`, `NotionVaultPlan`, `NotionPageReader`, `NotionPropertyReader`, `NotionDateParser`). Planned: the API, Notion's formulas in Bases' formula language. |
+| `NotionImport` | Notion's export names (`NotionExportEntryName`), the HTML export (`NotionHTMLImporter`, `NotionVaultPlan`, `NotionPageReader`, `NotionPropertyReader`, `NotionDateParser`). Notion's API (`NotionAPIClient`, `NotionAPIImporter`, `NotionAPIPageReader`, `NotionAPIPropertyReader`, `NotionAPIBaseWriter`), its formulas and rollups in Bases' formula language (`NotionFormulaConverter`, `NotionRollupConverter`). |
 | `ImporterFileSystem` | Files on disk, with Foundation: a file read by range (`FileRandomAccessSource`), a vault folder (`FolderImportDestination`), temporary files in a folder (`FolderTemporaryStorage`), an unpacked export (`ExportFileTree.reading(folder:)`). For the hosts that link the package, the command and the tests. |
 | `ImporterCommand` | The `importer` command, for manual runs: imports into a folder on disk. |
 | `Plugin/` (a package of its own) | `ImporterWasm`, the WebAssembly module's exports and host calls, and the JavaScript plugin around it. |
@@ -75,12 +75,13 @@ An internal integration's token (`ntn_…`), kept by the host (the Keychain in G
 
 - Discovery: `POST /v1/search` lists the pages and data sources shared with the integration, `GET /v1/databases/{id}` each database. Pages nest as in Notion, a page inside a block going up to the page that holds the block. A chosen page or database takes everything inside it.
 - Pages (`NotionAPIPageReader`): blocks read page by page with their children into the same Markdown model as the HTML export, so notes are written the same way: rich text with its marks, links and mentions, lists and to-dos, toggles as folded callouts, toggle headings as headings, callouts by icon, code, math, tables, bookmarks, files, child pages and databases as links and embeds, synced blocks copied, columns flattened, a table of contents from the page's headings, AI meeting notes with their summary, notes and transcript. Each note has `notion-id`.
-- Databases (`NotionAPIBaseWriter`): one base per database over its rows' folder, with the first data source's properties. Table, board, gallery and list views become table, Kanban, cards and list views, with the properties each shows, a board's groups and their order, sorts, covers, and filters of one property each. Calendar, timeline and chart views become table views, reported. Formulas Bases can compute become the base's formulas (`NotionFormulaConverter`, its function table after Obsidian Importer's `formula-converter.ts`); the others, and rollups, are written as their values and reported.
+- Databases (`NotionAPIBaseWriter`): one base per database over its rows' folder, with the first data source's properties. Table, board, gallery and list views become table, Kanban, cards and list views, with the properties each shows, a board's groups and their order, sorts, covers, and filters of one property each. Calendar, timeline and chart views become table views, reported. Formulas Bases can compute become the base's formulas (`NotionFormulaConverter`, its function table after Obsidian Importer's `formula-converter.ts`). Rollups become formulas over the notes their relation links to (`NotionRollupConverter`: counts, sums, averages, medians, extremes, ranges, unique values, checked shares), reading the related data source's properties to know its title and its tags. The formulas and rollups Bases cannot compute are written as their values and reported.
+- Linked databases (a database showing another's data source, which the search does not list and a page's block names): no base of their own. Their views are added to the base of the database they show, each named after the linked database too (`Board (This week)`), and the page embeds that base on its first such view (`![[Tasks.base#Board (This week)]]`). Pages are written before databases so that every linked view is known when a base is written. A database Notion refuses to give is reported and its embed kept as its title.
 - Rows (`NotionAPIPropertyReader`): the HTML import's types, relations as links inside the import and as titles outside it.
-- Files Notion holds are downloaded while their page is written, as their addresses expire after about an hour, into the page's folder.
+- Files Notion holds are downloaded while their page is written, as their addresses expire after about an hour, into the page's folder, in ranges of 8 MB written piece by piece.
 - A revoked token or Notion unreachable ends the import with what was written and a report that says why. A page unshared during the import is reported and the rest imported.
 
-Not yet: linked database views, rollups as formulas, files downloaded in ranges, and importing again over an earlier import.
+Not yet: importing again over an earlier import.
 
 ### Better than Obsidian's Importer
 

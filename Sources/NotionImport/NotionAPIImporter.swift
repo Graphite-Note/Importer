@@ -7,7 +7,7 @@
  *              properties, files downloaded while their page is written, and the import report.
  *
  * Authors: Bahey Shalash
- * Version: 0.1
+ * Version: 0.2
  * Date: 27/11/2026
  */
 
@@ -69,6 +69,18 @@ struct NotionAPIItem {
     var folder = VaultPath.vaultFolder
 }
 
+/// A linked database: a database whose data source is another database's, shown in the vault as views of that
+/// database's base.
+struct NotionAPILinkedDatabase {
+    /// The key of the database whose data source it shows.
+    var owner: String
+    var title: String
+    /// Its views, renamed for the owner's base.
+    var views: [JSONValue]
+    /// The view its embeds open on, `nil` for the base's first.
+    var embeddedView: String?
+}
+
 /// One import through the API, from discovery to the report.
 struct NotionAPIImportRun: NotionAPIPropertyResolving {
     let client: NotionAPIClient
@@ -85,6 +97,14 @@ struct NotionAPIImportRun: NotionAPIPropertyResolving {
     var propertyTypes: [String: PropertyType] = [:]
     var folderNames: [VaultPath: VaultFolderNames] = [:]
     var rootFolder: VaultPath
+    /// The properties of data sources read for rollups, by identifier, `nil` for one the integration cannot read.
+    var dataSourceProperties: [String: JSONValue?] = [:]
+    /// Linked databases by key, which have no base of their own.
+    var linkedDatabases: [String: NotionAPILinkedDatabase] = [:]
+    /// The names given to linked databases' views, lowercased.
+    var linkedViewNames: Set<String> = []
+    /// The databases whose base is written, by key.
+    var writtenBases: Set<String> = []
 
     init(client: NotionAPIClient, destination: any ImportDestination, options: NotionAPIImportOptions) {
         self.client = client
@@ -106,6 +126,9 @@ struct NotionAPIImportRun: NotionAPIPropertyResolving {
 
     func target(ofDatabase identifier: String) -> String? {
         let key = NotionAPIImportRun.key(identifier)
+        if let linked = linkedDatabases[key], let target = linkTargets[linked.owner] {
+            return linked.embeddedView.map { target + "#" + $0 } ?? target
+        }
         if let database = databaseOfDataSource[key] { return linkTargets[database] }
         guard items[key]?.kind == .database else { return nil }
         return linkTargets[key]
@@ -204,11 +227,24 @@ struct NotionAPIImportRun: NotionAPIPropertyResolving {
             }
         }
         for database in databaseIdentifiers.sorted() {
-            let json = try await client.get("databases/\(database)")
+            let json: JSONValue
+            do {
+                json = try await client.get("databases/\(database)")
+            } catch let error as NotionAPIError {
+                switch error {
+                case .unauthorized, .unavailable: throw error
+                default:
+                    report.record(.leftOut, at: nil, "a database (\(database)) was not imported: \(error.description)")
+                    continue
+                }
+            }
             let key = NotionAPIImportRun.key(database)
             let title = NotionAPIPropertyReader.plainText(json["title"] ?? .null)
+            // The search names the database a data source belongs to: a linked database lists another's.
             for source in json["data_sources"]?.elements ?? [] {
-                if let sourceIdentifier = source["id"]?.string { databaseOfDataSource[NotionAPIImportRun.key(sourceIdentifier)] = key }
+                if let sourceIdentifier = source["id"]?.string, databaseOfDataSource[NotionAPIImportRun.key(sourceIdentifier)] == nil {
+                    databaseOfDataSource[NotionAPIImportRun.key(sourceIdentifier)] = key
+                }
             }
             items[key] = NotionAPIItem(identifier: database, kind: .database, title: title.isEmpty ? "Untitled" : title,
                                        parent: try await parentKey(of: json["parent"] ?? .null), json: json)
@@ -233,6 +269,90 @@ struct NotionAPIImportRun: NotionAPIPropertyResolving {
         }
         // A parent outside the import leaves its child at the top.
         for (key, item) in items where item.parent.map({ items[$0] == nil }) ?? false { items[key]?.parent = nil }
+        try await findLinkedDatabases()
+    }
+
+    /// Takes out of the import's items the databases that show another database's data source, keeping their views
+    /// for that database's base.
+    mutating func findLinkedDatabases() async throws {
+        for (key, item) in items.sorted(by: { $0.key < $1.key }) where item.kind == .database {
+            if try await registerLinkedDatabase(item.json, title: item.title) { items[key] = nil }
+        }
+    }
+
+    /// The database a linked database shows: the one database owning all of `database`'s data sources, when it is
+    /// another one of the import.
+    func owner(ofLinkedDatabase database: JSONValue) -> String? {
+        guard let identifier = database["id"]?.string else { return nil }
+        let sources = (database["data_sources"]?.elements ?? []).compactMap { $0["id"]?.string.map(NotionAPIImportRun.key) }
+        let owners = Set(sources.compactMap { databaseOfDataSource[$0] })
+        guard !sources.isEmpty, owners.count == 1, let owner = owners.first, owner != NotionAPIImportRun.key(identifier),
+            items[owner]?.kind == .database
+        else { return nil }
+        return owner
+    }
+
+    /// Keeps `database` as a linked database with its views when it shows another database's data source, and says
+    /// whether it does.
+    mutating func registerLinkedDatabase(_ database: JSONValue, title: String) async throws -> Bool {
+        guard let identifier = database["id"]?.string, let owner = owner(ofLinkedDatabase: database) else { return false }
+        guard !writtenBases.contains(owner) else {
+            // Found on a page written after the base it shows: embedded as that base, without views of its own.
+            linkedDatabases[NotionAPIImportRun.key(identifier)] = NotionAPILinkedDatabase(owner: owner, title: title, views: [], embeddedView: nil)
+            report.record(.simplified, at: items[owner]?.path, "the linked database “\(title)” is embedded as this base, without its own views")
+            return true
+        }
+        do {
+            var views: [JSONValue] = []
+            for listed in try await client.allResults(get: "views", query: [("database_id", identifier)]) {
+                if let viewIdentifier = listed["id"]?.string { views.append(try await client.get("views/\(viewIdentifier)")) }
+            }
+            // Each view is named after the linked database too, so that it stands apart from the owner's own views.
+            var renamed: [JSONValue] = []
+            for view in views {
+                let viewName = view["name"]?.string ?? "View"
+                var name = viewName + " (" + title + ")"
+                var number = 2
+                while linkedViewNames.contains(name.lowercased()) {
+                    name = viewName + " (" + title + " " + String(number) + ")"
+                    number += 1
+                }
+                linkedViewNames.insert(name.lowercased())
+                guard case .object(let members) = view else { continue }
+                renamed.append(.object(members.filter { $0.key != "name" } + [("name", .string(name))]))
+            }
+            views = renamed
+            linkedDatabases[NotionAPIImportRun.key(identifier)] = NotionAPILinkedDatabase(owner: owner, title: title, views: views,
+                                                                                          embeddedView: views.first?["name"]?.string)
+        } catch let error as NotionAPIError {
+            if case .unauthorized = error { throw error }
+            if case .unavailable = error { throw error }
+            linkedDatabases[NotionAPIImportRun.key(identifier)] = NotionAPILinkedDatabase(owner: owner, title: title, views: [], embeddedView: nil)
+        }
+        return true
+    }
+
+    /// Reads the databases `blocks` embed that discovery did not find, Notion's search giving no linked database,
+    /// and keeps those showing a database of the import as linked databases.
+    mutating func readEmbeddedDatabases(in blocks: [NotionAPIBlock], at path: VaultPath) async throws {
+        for block in blocks {
+            if block.type == "child_database", target(ofDatabase: block.identifier) == nil,
+                linkedDatabases[NotionAPIImportRun.key(block.identifier)] == nil
+            {
+                do {
+                    let database = try await client.get("databases/\(block.identifier)")
+                    let title = NotionAPIPropertyReader.plainText(database["title"] ?? .null)
+                    _ = try await registerLinkedDatabase(database, title: title.isEmpty ? (block.content["title"]?.string ?? "Untitled") : title)
+                } catch let error as NotionAPIError {
+                    switch error {
+                    case .unauthorized, .unavailable: throw error
+                    default: report.record(.leftOut, at: path, "a database (\(block.identifier)) was not imported: \(error.description)")
+                    }
+                }
+            }
+            try await readEmbeddedDatabases(in: block.children, at: path)
+            for section in block.sections { try await readEmbeddedDatabases(in: section.blocks, at: path) }
+        }
     }
 
     /// The key of the page, data source or database holding an object, `nil` at the top. A page inside a block is
@@ -281,6 +401,12 @@ struct NotionAPIImportRun: NotionAPIPropertyResolving {
             order.append(key)
             queue += (children[key] ?? []).map { ($0, item.folder) }
         }
+        // Pages before databases: a page can embed a linked database whose views go into a database's base, which
+        // is written once. A database's rows still follow it, as they read its formulas.
+        func isPage(_ key: String) -> Bool {
+            items[key]?.kind == .page && items[key]?.parent.flatMap { items[$0]?.kind } != .database
+        }
+        order = order.filter { isPage($0) } + order.filter { !isPage($0) }
         // Link targets: the name alone when no other file of the import has it, else the path.
         var counts: [String: Int] = [:]
         for item in items.values { counts[item.path.name.lowercased(), default: 0] += 1 }
@@ -374,6 +500,7 @@ struct NotionAPIImportRun: NotionAPIPropertyResolving {
 
     mutating func writePage(_ item: NotionAPIItem) async throws {
         let content = try await blocks(of: item.identifier)
+        try await readEmbeddedDatabases(in: content, at: item.path)
         try await download(NotionAPIImportRun.files(in: content), into: item.folder, for: item.path)
         var frontMatter = FrontMatter()
         frontMatter.set("notion-id", to: .text(item.identifier))
@@ -409,13 +536,14 @@ struct NotionAPIImportRun: NotionAPIPropertyResolving {
 
     // MARK: Databases
 
-    /// The formulas of a database's first data source that Bases can compute, by name, converted.
+    /// The formulas and rollups of a database's first data source that Bases can compute, by name, converted.
     static func convertibleFormulas(of database: JSONValue) -> [String: String] {
         let schema = database["data_source_schema"] ?? .null
         var names: [String: String] = [:]
         for (name, property) in schema.members { if let identifier = property["id"]?.string { names[identifier] = name } }
         let formulaNames = Set(schema.members.filter { $0.value["type"]?.string == "formula" }.map { $0.key })
         var result: [String: String] = [:]
+        for (name, formula) in database["rollup_formulas"]?.members ?? [] { if let text = formula.string { result[name] = text } }
         for (name, property) in schema.members where property["type"]?.string == "formula" {
             if let expression = property["formula"]?["expression"]?.string,
                 let converted = try? NotionFormulaConverter.convert(expression, propertyNames: names, formulaNames: formulaNames)
@@ -438,9 +566,11 @@ struct NotionAPIImportRun: NotionAPIPropertyResolving {
         }
         let schema = try await client.get("data_sources/\(source)")
         var database = item.json
-        // The schema, kept with the database for its rows' formulas.
+        // The schema and the rollups, kept with the database for its rows' formulas.
+        let rollups = try await rollupFormulas(of: schema["properties"] ?? .null, database: item)
         if case .object(var members) = database {
             members.append(("data_source_schema", schema["properties"] ?? .null))
+            members.append(("rollup_formulas", .object(rollups.map { ($0.name, JSONValue.string($0.formula)) })))
             database = .object(members)
             items[NotionAPIImportRun.key(item.identifier)]?.json = database
         }
@@ -453,18 +583,90 @@ struct NotionAPIImportRun: NotionAPIPropertyResolving {
             if case .unauthorized = error { throw error }
             report.record(.simplified, at: item.path, "the views of “\(item.title)” could not be read (\(error.description)): the base has one table view")
         }
+        for (_, linked) in linkedDatabases.sorted(by: { $0.key < $1.key }) where linked.owner == NotionAPIImportRun.key(item.identifier) {
+            if views.isEmpty {
+                // The base's own first view stays the one its embeds open on.
+                views.append(.object([("object", .string("view")), ("name", .string("Table")), ("type", .string("table"))]))
+            }
+            views += linked.views
+            let names = linked.views.compactMap { $0["name"]?.string }.map { "“" + $0 + "”" }
+            report.record(.simplified, at: item.path, "the linked database “\(linked.title)” is embedded where its page had it as this base"
+                + (names.isEmpty ? "" : ", opening on " + (names.count == 1 ? "its view " : "its views ") + names.joined(separator: ", ")))
+        }
         let base = NotionAPIBaseWriter.base(for: database, schema: schema["properties"] ?? .null, views: views, dataSource: source,
                                             rowsFolder: item.folder, formulas: NotionAPIImportRun.convertibleFormulas(of: database))
         for finding in base.findings { report.record(finding.severity, at: item.path, finding.message) }
         if let folder = item.path.parent { try await destination.createFolder(at: folder) }
         try await destination.createFolder(at: item.folder)
         try await destination.writeNewFile(Array(base.file.yaml.utf8), at: item.path)
+        writtenBases.insert(NotionAPIImportRun.key(item.identifier))
         report.recordWritten(.base, at: item.path)
         for (name, property) in (schema["properties"] ?? .null).members {
             guard let type = property["type"]?.string, type != "title" else { continue }
-            if type == "formula", NotionAPIImportRun.convertibleFormulas(of: database)[name] != nil { continue }
+            // A computed property is either the base's formula or, in each row, the value it had: the rows type it.
+            if type == "formula" || type == "rollup" { continue }
             let propertyName = type == "multi_select" && name.lowercased() == "tags" ? "tags" : name
             assign(propertyName, NotionAPIPropertyReader.propertyType(ofNotionType: type, name: name), at: item.path)
         }
+    }
+
+    // MARK: Rollups
+
+    /// The rollups of a data source whose properties are `properties`, as formulas of its base, by name. A rollup
+    /// Bases cannot compute is reported, and its rows keep the value it had.
+    mutating func rollupFormulas(of properties: JSONValue, database item: NotionAPIItem) async throws -> [(name: String, formula: String)] {
+        var names: [String: String] = [:]
+        for (name, property) in properties.members { if let identifier = property["id"]?.string { names[identifier] = name } }
+        var result: [(name: String, formula: String)] = []
+        for (name, property) in properties.members where property["type"]?.string == "rollup" {
+            let rollup = property["rollup"] ?? .null
+            let relation = rollup["relation_property_name"]?.string ?? rollup["relation_property_id"]?.string.flatMap { names[$0] }
+            guard let relation, let function = rollup["function"]?.string else { continue }
+            func refuse(_ reason: String) {
+                report.record(.simplified, at: item.path, "the rollup “\(name)” \(reason), so each note holds its value when imported")
+            }
+            var related: JSONValue?
+            if let source = properties[relation]?["relation"]?["data_source_id"]?.string { related = try await relatedProperties(source) }
+            var targetName = rollup["rollup_property_name"]?.string
+            if targetName == nil, let identifier = rollup["rollup_property_id"]?.string {
+                targetName = related?.members.first { $0.value["id"]?.string == identifier }?.key
+            }
+            guard let targetName else {
+                refuse("reads a property of “\(relation)” the integration cannot see")
+                continue
+            }
+            let target: NotionRollupConverter.Target
+            switch related?[targetName]?["type"]?.string {
+            case "title"?: target = .title
+            case "formula"?, "rollup"?:
+                refuse("reads “\(targetName)”, which the related notes compute rather than hold")
+                continue
+            case "multi_select"? where targetName.lowercased() == "tags": target = .property("tags")
+            default: target = .property(targetName)
+            }
+            guard let formula = NotionRollupConverter.formula(relation: relation, target: target, function: function) else {
+                refuse("uses Notion's \(function.replacingEvery("_", with: " ")), which Bases has no counterpart for")
+                continue
+            }
+            result.append((name, formula))
+        }
+        return result
+    }
+
+    /// The properties of the data source `identifier`, `nil` when the integration cannot read it.
+    mutating func relatedProperties(_ identifier: String) async throws -> JSONValue? {
+        let key = NotionAPIImportRun.key(identifier)
+        if let known = dataSourceProperties[key] { return known }
+        var properties: JSONValue?
+        do {
+            properties = try await client.get("data_sources/\(identifier)")["properties"]
+        } catch let error as NotionAPIError {
+            switch error {
+            case .unauthorized, .unavailable: throw error
+            default: properties = nil
+            }
+        }
+        dataSourceProperties[key] = .some(properties)
+        return properties
     }
 }

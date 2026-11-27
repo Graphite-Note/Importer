@@ -6,7 +6,7 @@
  *              scripted request by request, and a made-up workspace served from Obsidian Importer's API fixtures.
  *
  * Authors: Bahey Shalash
- * Version: 0.1
+ * Version: 0.2
  * Date: 27/11/2026
  */
 
@@ -80,6 +80,8 @@ struct FakeNotionWorkspace: Sendable {
     var rows: [String: [JSONValue]] = [:]
     var views: [String: [JSONValue]] = [:]
     var files: [String: [UInt8]] = [:]
+    /// The database each data source belongs to, as the search gives it, when several databases list it.
+    var dataSourceOwners: [String: String] = [:]
 
     static func page(_ identifier: String, title: String, parent: JSONValue, icon: String? = nil) -> JSONValue {
         var members: [(key: String, value: JSONValue)] = [("object", .string("page")), ("id", .string(identifier)), ("parent", parent)]
@@ -145,7 +147,8 @@ struct FakeNotionWorkspace: Sendable {
         var results = pages.keys.sorted().compactMap { pages[$0] }
         for (source, sourceRows) in rows.sorted(by: { $0.key < $1.key }) {
             results += sourceRows
-            let database = databases.first { $0.value["data_sources"]?.elements.contains { $0["id"]?.string == source } == true }?.key ?? ""
+            let database = dataSourceOwners[source]
+                ?? databases.first { $0.value["data_sources"]?.elements.contains { $0["id"]?.string == source } == true }?.key ?? ""
             results.append(.object([("object", .string("data_source")), ("id", .string(source)), ("parent", FakeNotionWorkspace.parent("database_id", database))]))
         }
         return results
@@ -167,7 +170,8 @@ struct FakeNotionWorkspace: Sendable {
         case ("POST", 3, "data_sources"): return jsonResponse(200, listAnswer(rows[parts[1]] ?? []).text)
         case ("GET", 3, "blocks"): return jsonResponse(200, (blocks[parts[1]] ?? listAnswer([])).text)
         case ("GET", 1, "views"):
-            let database = address.split(separator: "=").last.map(String.init) ?? ""
+            let query = address.split(separator: "?").dropFirst().first.map(String.init) ?? ""
+            let database = query.split(separator: "&").first { $0.hasPrefix("database_id=") }.map { String($0.dropFirst("database_id=".count)) } ?? ""
             let listed = (views[database] ?? []).map { view in JSONValue.object([("object", .string("view")), ("id", view["id"] ?? .null)]) }
             return jsonResponse(200, listAnswer(listed).text)
         case ("GET", 2, "views"):
