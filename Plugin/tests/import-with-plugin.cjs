@@ -29,7 +29,6 @@ async function main() {
         files, folder: into, date, exportYear: Number(year), onProgress: () => { progressCalls += 1; },
     });
     summary.progressCalls = progressCalls;
-    summary.peakMemoryMB = Math.round(engine.instance.exports.memory.buffer.byteLength / 1048576);
     console.log(JSON.stringify(summary));
 }
 

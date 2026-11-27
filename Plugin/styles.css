@@ -1,0 +1,28 @@
+/*
+ * File: styles.css
+ * ----------------
+ * Layer: Plugin
+ * Description: The import window of the Notion importer plugin, in Obsidian's own variables.
+ *
+ * Authors: Bahey Shalash
+ * Version: 0.1
+ * Date: 27/11/2026
+ */
+
+.notion-importer .notion-importer-file {
+    max-width: 100%;
+}
+
+.notion-importer .notion-importer-progress {
+    width: 100%;
+    margin-block: var(--size-4-2, 8px);
+}
+
+.notion-importer .notion-importer-status {
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+}
+
+.notion-importer .notion-importer-status.mod-warning {
+    color: var(--text-error);
+}

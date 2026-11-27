@@ -76,6 +76,10 @@ jobs:
         run: |
           Plugin/build-module.sh embedded "$RUNNER_TEMP/importer-embedded.wasm"
           Plugin/build-module.sh standard-library "$RUNNER_TEMP/importer-standard-library.wasm"
+      - name: The plugin's main.js is assembled and parses
+        run: |
+          node Plugin/assemble-main.mjs "$RUNNER_TEMP/importer-embedded.wasm" "$RUNNER_TEMP/main.js"
+          node --check "$RUNNER_TEMP/main.js"
       - name: The plugin's module imports the test exports as the linked package does
         run: |
           swift build --product importer
