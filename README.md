@@ -58,6 +58,8 @@ Several parts are given one after the other, an unpacked export as its folder.
 Plugin/build-module.sh embedded Plugin/build/importer.wasm
 ```
 
+`Plugin/build-plugin.sh` writes the plugin itself (`main.js` with the module inside it, `manifest.json`, `styles.css`), and a version tag whose version `manifest.json` names publishes a release with those files (`.github/workflows/release.yml`), from which Graphite and Obsidian install it. The plugin adds the command "Import Notion's HTML export…" and a settings tab, both opening its import window: the export picked (its zip, or its parts together), the vault folder, a progress bar page by page, Stop, and the report note at the end.
+
 `Plugin/tests/compare-with-linked.sh` imports exports with the `importer` command and with the module in Node, and checks that both vaults hold the same bytes.
 
 ## Tests

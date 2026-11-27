@@ -7,7 +7,7 @@
  *              plugin API, never over a file already there) and temporary files kept as blobs.
  *
  * Authors: Bahey Shalash
- * Version: 0.1
+ * Version: 0.3
  * Date: 27/11/2026
  */
 
@@ -25,6 +25,30 @@ const fileExists = 17;
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 
+/// What the plugin says when the web view runs no WebAssembly. WebKit leaves `WebAssembly` undefined in Lockdown Mode
+/// (on the iPhone, the iPad and the Mac), so an import there would otherwise end in a bare ReferenceError.
+const webAssemblyUnavailableMessage = 'This importer needs WebAssembly, which this app\u2019s web view has turned off. '
+    + 'In Lockdown Mode, WebKit turns WebAssembly off on the iPhone, the iPad and the Mac. '
+    + 'In Graphite, Import \u203a From Notion\u2026 imports the export without it.';
+
+/// The 8 bytes of an empty module: its magic number and version.
+const emptyModule = new Uint8Array([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]);
+
+/// Why the module cannot run in `scope`, or null when it can: no `WebAssembly` object, one missing what the engine
+/// calls, or one that refuses the empty module.
+function webAssemblyUnavailableReason(scope = globalThis) {
+    const webAssembly = scope.WebAssembly;
+    if (typeof webAssembly !== 'object' || webAssembly === null) return webAssemblyUnavailableMessage;
+    for (const name of ['compile', 'instantiate', 'validate']) {
+        if (typeof webAssembly[name] !== 'function') return webAssemblyUnavailableMessage;
+    }
+    try {
+        return webAssembly.validate(emptyModule) ? null : webAssemblyUnavailableMessage;
+    } catch (error) {
+        return webAssemblyUnavailableMessage;
+    }
+}
+
 /// Texts separated by NUL, as the module passes them.
 function joinedTexts(texts) {
     return textEncoder.encode(texts.join('\u0000'));
@@ -40,14 +64,50 @@ function baseName(path) {
     return position < 0 ? path : path.slice(position + 1);
 }
 
+/// The bytes of `blob`. WebKit's blobs read themselves; a FileReader stands in where they do not (jsdom).
+function blobBytes(blob) {
+    if (typeof blob.arrayBuffer === 'function') return blob.arrayBuffer();
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(reader.error);
+        reader.readAsArrayBuffer(blob);
+    });
+}
+
+/// `pieces` joined into one buffer.
+function joinedBuffer(pieces) {
+    const total = pieces.reduce((sum, piece) => sum + piece.length, 0);
+    const joined = new Uint8Array(total);
+    let offset = 0;
+    for (const piece of pieces) {
+        joined.set(piece, offset);
+        offset += piece.length;
+    }
+    return joined.buffer;
+}
+
 /// A failure the module reports with these words.
 class HostFailure extends Error {}
+
+/// A file larger than this is written in pieces of about this size when the vault can append (`appendBinary`),
+/// so that an attachment of hundreds of MB is never held whole, and no write exceeds what a host accepts in one
+/// message (64 MB in Graphite).
+const streamedPieceBytes = 16 * 1048576;
+
+/// The hidden file in the same folder that a file written in pieces grows in, until it is complete and renamed.
+function partPath(path, handle) {
+    const slash = path.lastIndexOf('/');
+    return path.slice(0, slash + 1) + '.' + path.slice(slash + 1) + '.notion-import-part-' + handle;
+}
 
 /**
  * The vault as the engine writes it. `vault` gives, as the plugin API does: `exists(path)`, `createFolder(path)`,
  * `createBinary(path, arrayBuffer)` (refusing an existing file), `list(path)` (`{ files, folders }` of full paths),
- * `read(path)` and `write(path, text)` for text, and `configDir`. `request`, when given, sends a request as
- * `requestUrl` does.
+ * `read(path)` and `write(path, text)` for text, and `configDir`. When it also gives `appendBinary(path,
+ * arrayBuffer)`, `rename(path, newPath)` (refusing an existing destination) and `remove(path)`, a large file is
+ * written in pieces into a hidden file beside it, renamed once complete, and removed if the import ends first.
+ * `request`, when given, sends a request as `requestUrl` does.
  */
 class NotionImportEngine {
     constructor(moduleBytes, vault, request) {
@@ -57,11 +117,49 @@ class NotionImportEngine {
         this.instance = null;
         this.sources = [];
         this.writers = new Map();
+        /// The hidden files of files written in pieces that the import did not finish, removed when it ends.
+        this.unfinishedParts = new Set();
         this.temporaryFiles = new Map();
         this.pendingPaths = new Set();
         this.nextHandle = 1;
         this.hostCallCount = 0;
         this.isBroken = false;
+        this.isStopRequested = false;
+    }
+
+    canWriteInPieces() {
+        return typeof this.vault.appendBinary === 'function' && typeof this.vault.rename === 'function'
+            && typeof this.vault.remove === 'function';
+    }
+
+    /// Adds the pieces received so far to the file's hidden part, which the first append makes (through the
+    /// adapter, since the vault's own API keeps out of hidden files).
+    async writePieces(writer, handle) {
+        if (!writer.partPath) {
+            writer.partPath = partPath(writer.path, handle);
+            // Left by an import that ended without removing it (the app was closed meanwhile).
+            if (await this.vault.exists(writer.partPath)) await this.vault.remove(writer.partPath);
+        }
+        if (writer.pieceBytes === 0) return;
+        const contents = joinedBuffer(writer.pieces);
+        writer.pieces = [];
+        writer.pieceBytes = 0;
+        await this.vault.appendBinary(writer.partPath, contents);
+    }
+
+    /// Removes the hidden parts of files the import did not finish, so nothing half written stays in the vault.
+    async removeUnfinishedParts() {
+        for (const writer of this.writers.values()) {
+            if (writer.partPath) this.unfinishedParts.add(writer.partPath);
+        }
+        for (const path of this.unfinishedParts) {
+            try {
+                if (await this.vault.exists(path)) await this.vault.remove(path);
+            } catch (error) {
+                // Left for the next import to remove: the import's own outcome is what is reported.
+            }
+        }
+        this.unfinishedParts.clear();
     }
 
     /// The module's memory as bytes, read again after every call that may grow it.
@@ -169,7 +267,7 @@ class NotionImportEngine {
                     engine.hostCallCount += 1;
                     Promise.resolve()
                         .then(() => engine.answer(kind, argumentsGiven, bytes))
-                        .catch((error) => ({ status: failed, bytes: textEncoder.encode(engine.reason(error)) }))
+                        .catch((error) => ({ status: failed, bytes: textEncoder.encode(engine.clause(error)) }))
                         .then((answer) => engine.resume(request, answer));
                 },
                 progress(done, total) {
@@ -188,6 +286,12 @@ class NotionImportEngine {
     reason(error) {
         if (error && typeof error.message === 'string' && error.message !== '') return error.message;
         return String(error);
+    }
+
+    /// The reason as the report quotes it, inside its own sentence: without the final full stop that the app's
+    /// messages end with ("…could not be copied: The disk is full." rather than "full..").
+    clause(error) {
+        return this.reason(error).replace(/\.$/, '');
     }
 
     /// Gives the module its answer. A trap (a Swift runtime error) ends the import: the instance cannot be used again.
@@ -218,18 +322,27 @@ class NotionImportEngine {
                 if (!source) throw new HostFailure('the import asked for a file it was not given');
                 const offset = Number(given[1]);
                 const piece = source.slice(offset, offset + Number(given[2]));
-                return done(new Uint8Array(await piece.arrayBuffer()));
+                return done(new Uint8Array(await blobBytes(piece)));
             }
             case HostKind.createFolder: {
-                const path = given[0];
-                if (path === '' || await this.vault.exists(path)) return done();
-                await this.vault.createFolder(path);
+                // The folder and the folders above it, as the module asks.
+                const names = given[0].split('/').filter((name) => name !== '');
+                for (let count = 1; count <= names.length; count += 1) {
+                    const path = names.slice(0, count).join('/');
+                    if (!(await this.vault.exists(path))) await this.vault.createFolder(path);
+                }
                 return done();
             }
             case HostKind.writeNewFile: {
                 const path = given[0];
                 if (this.pendingPaths.has(path) || await this.vault.exists(path)) return { status: fileExists, bytes: new Uint8Array(0) };
-                await this.vault.createBinary(path, bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
+                try {
+                    await this.vault.createBinary(path, bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
+                } catch (error) {
+                    // Written meanwhile by someone else: the vault refused to replace it.
+                    if (/already exists/i.test(this.reason(error))) return { status: fileExists, bytes: new Uint8Array(0) };
+                    throw error;
+                }
                 return done();
             }
             case HostKind.createNewFile: {
@@ -237,26 +350,36 @@ class NotionImportEngine {
                 if (this.pendingPaths.has(path) || await this.vault.exists(path)) return { status: fileExists, bytes: new Uint8Array(0) };
                 const handle = String(this.nextHandle++);
                 this.pendingPaths.add(path);
-                this.writers.set(handle, { path, pieces: [] });
+                this.writers.set(handle, { path, pieces: [], pieceBytes: 0, partPath: null });
                 return done(textEncoder.encode(handle));
             }
             case HostKind.appendToFile: {
                 const writer = this.writers.get(given[0]);
                 if (!writer) throw new HostFailure('the import wrote to a file it had not made');
                 writer.pieces.push(bytes);
+                writer.pieceBytes += bytes.length;
+                if (writer.pieceBytes >= streamedPieceBytes && this.canWriteInPieces()) await this.writePieces(writer, given[0]);
                 return done();
             }
             case HostKind.closeFile: {
                 const writer = this.writers.get(given[0]);
                 if (!writer) throw new HostFailure('the import closed a file it had not made');
                 this.writers.delete(given[0]);
-                // The plugin API writes a file whole: the pieces are joined once, when the file is complete.
-                const contents = await new Blob(writer.pieces).arrayBuffer();
-                writer.pieces = [];
                 try {
-                    await this.vault.createBinary(writer.path, contents);
+                    if (writer.partPath) {
+                        // Written in pieces: the rest added, then the complete file put in its place.
+                        await this.writePieces(writer, given[0]);
+                        await this.vault.rename(writer.partPath, writer.path);
+                        writer.partPath = null;
+                    } else {
+                        // Small enough, or a vault that cannot append: the pieces are joined once, the file written whole.
+                        const contents = joinedBuffer(writer.pieces);
+                        writer.pieces = [];
+                        await this.vault.createBinary(writer.path, contents);
+                    }
                 } finally {
                     this.pendingPaths.delete(writer.path);
+                    if (writer.partPath) this.unfinishedParts.add(writer.partPath);
                 }
                 return done();
             }
@@ -359,6 +482,8 @@ class NotionImportEngine {
      */
     async importNotionExport({ files, folder, date, exportYear, onProgress }) {
         if (this.instance) throw new Error('An engine runs one import.');
+        const unavailable = webAssemblyUnavailableReason();
+        if (unavailable) throw new Error(unavailable);
         await this.instantiate();
         this.onProgress = onProgress || null;
         const given = [folder || '', files.map((file) => file.name).join(', '), date, String(exportYear)];
@@ -377,24 +502,33 @@ class NotionImportEngine {
                     reportPath: texts[0], wasCancelled: texts[1] === '1', notes: Number(texts[2]), bases: Number(texts[3]),
                     attachments: Number(texts[4]), simplified: Number(texts[5]), leftOut: Number(texts[6]), failed: Number(texts[7]),
                     seconds: (Date.now() - started) / 1000, hostCalls: this.hostCallCount,
+                    moduleMemoryMB: Math.round(this.instance.exports.memory.buffer.byteLength / 1048576),
                 });
             };
         });
         try {
             this.withBytesInModule(joinedTexts(given), (pointer, count) => this.instance.exports.importer_notion_import(pointer, count));
+            // Stop pressed while the module was still being made.
+            if (this.isStopRequested) this.instance.exports.importer_cancel();
         } catch (error) {
             this.isBroken = true;
             this.finish(failed, ['the importer stopped on an error of its own (' + this.reason(error) + ')']);
         }
-        return result;
+        try {
+            return await result;
+        } finally {
+            await this.removeUnfinishedParts();
+        }
     }
 
     /// Stops the import at its next page. Its report is still written, and the promise resolves with `wasCancelled`.
     cancel() {
-        if (this.instance && !this.isBroken) this.instance.exports.importer_cancel();
+        this.isStopRequested = true;
+        if (this.instance && this.settle && !this.isBroken) this.instance.exports.importer_cancel();
     }
 }
 
 if (typeof module !== 'undefined' && module.exports && typeof exports !== 'undefined') {
     module.exports.NotionImportEngine = NotionImportEngine;
+    module.exports.webAssemblyUnavailableReason = webAssemblyUnavailableReason;
 }
