@@ -1,0 +1,62 @@
+filters: file.folder == "Notion/Tasks"
+formulas:
+  State: if(note["Done"], "Closed", "Open")
+properties:
+  file.name:
+    displayName: Name
+views:
+  - type: table
+    name: All tasks
+    order:
+      - file.name
+      - Status
+      - Priority
+      - tags
+      - Done
+      - Owner
+      - Poster
+      - formula.State
+  - type: kanban
+    name: Board
+    groupBy:
+      property: note.Status
+      direction: ASC
+    groupOrder:
+      - ""
+      - Not started
+      - In progress
+      - Done
+    order:
+      - file.name
+      - Priority
+      - Owner
+    image: note.banner
+  - type: kanban
+    name: By priority
+    groupBy:
+      property: note.Priority
+      direction: ASC
+    groupOrder:
+      - ""
+      - High
+      - Medium
+      - Low
+    order:
+      - file.name
+      - Status
+    image: note.Poster
+    imageFit: contain
+  - type: kanban
+    name: By state
+    groupBy:
+      property: formula.State
+      direction: DESC
+    order:
+      - file.name
+  - type: kanban
+    name: By tag
+    groupBy:
+      property: note.tags
+      direction: ASC
+    order:
+      - file.name

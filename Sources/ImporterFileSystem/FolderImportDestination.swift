@@ -6,7 +6,7 @@
  *              and hosts that need no coordination of their writes.
  *
  * Authors: Bahey Shalash
- * Version: 0.3
+ * Version: 0.4
  * Date: 27/11/2026
  */
 
@@ -89,8 +89,37 @@ public struct FolderImportDestination: ImportDestination {
         return conflicting
     }
 
-    private func url(of path: VaultPath) -> URL {
+    fileprivate func url(of path: VaultPath) -> URL {
         path.components.reduce(vaultFolder) { folder, name in folder.appendingPathComponent(name) }
+    }
+}
+
+/// A folder updated by a later import: nothing else writes it meanwhile, so a replacement checks the file just before.
+extension FolderImportDestination: UpdatingImportDestination {
+    public func readFile(at path: VaultPath) async throws -> [UInt8]? {
+        let fileURL = url(of: path)
+        guard (try? fileURL.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true else { return nil }
+        return Array(try Data(contentsOf: fileURL))
+    }
+
+    public func replaceFile(at path: VaultPath, expecting expected: [UInt8], with contents: [UInt8]) async throws {
+        guard try await readFile(at: path) == expected else { throw ImportUpdateError.changedSinceRead(path) }
+        try Data(contents).write(to: url(of: path), options: .atomic)
+    }
+
+    public func filePaths(inFolderAt path: VaultPath) async throws -> [VaultPath] {
+        let folderURL = url(of: path)
+        guard (try? folderURL.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true else { return [] }
+        var paths: [VaultPath] = []
+        for relative in try FileManager.default.subpathsOfDirectory(atPath: folderURL.path).sorted() {
+            let components = relative.split(separator: "/").map(String.init)
+            let fileURL = folderURL.appendingPathComponent(relative)
+            guard (try? fileURL.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true,
+                let filePath = VaultPath(components: path.components + components)
+            else { continue }
+            paths.append(filePath)
+        }
+        return paths
     }
 }
 
