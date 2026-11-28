@@ -8,7 +8,7 @@
  *              link resolved by page identifier.
  *
  * Authors: Bahey Shalash
- * Version: 0.3
+ * Version: 0.4
  * Date: 28/11/2026
  */
 
@@ -23,12 +23,19 @@ public struct NotionLinkTarget: Equatable, Sendable {
     public var title: String
     /// Whether the target is a database, imported as a base.
     public var isBase: Bool
+    /// The base of a database whose page is a note of its own (its text, icon or cover beside the table): the wiki
+    /// link target of the base the note embeds, which an inline view of the database embeds too.
+    public var baseLinkTarget: String?
 
-    public init(linkTarget: String, title: String, isBase: Bool) {
+    public init(linkTarget: String, title: String, isBase: Bool, baseLinkTarget: String? = nil) {
         self.linkTarget = linkTarget
         self.title = title
         self.isBase = isBase
+        self.baseLinkTarget = baseLinkTarget
     }
+
+    /// The base a view of this database embeds, `nil` for a page that is no database.
+    public var embeddedBase: String? { baseLinkTarget ?? (isBase ? linkTarget : nil) }
 }
 
 /// What a page's links are resolved against: every page, database and attachment of the export, placed in the vault.
@@ -44,6 +51,13 @@ public protocol NotionLinkResolving {
     /// The text of the heading `blockIdentifier` (hyphenated, lowercase) of the page `pageIdentifier`, `nil` when the
     /// block is no heading.
     func headingText(inPage pageIdentifier: String, block blockIdentifier: String) -> String?
+    /// The one database of the export whose title is `title`, spaces and case aside, for a linked view that names no
+    /// row of it; `nil` when none or several have that title.
+    func database(titled title: String) -> NotionLinkTarget?
+}
+
+extension NotionLinkResolving {
+    public func database(titled title: String) -> NotionLinkTarget? { nil }
 }
 
 /// A finding of reading a page, for the import report.
@@ -67,6 +81,8 @@ public struct NotionDatabaseTable: Equatable, Sendable {
     public var rowPageIdentifiers: [String]
     /// The title of each row, in the order of the table.
     public var rowTitles: [String]
+    /// The share of the table's width each column takes, in percent, as its `colgroup` gives it (since 2025).
+    public var columnWidths: [Double?] = []
 }
 
 /// One page of Notion's HTML export, read.
@@ -88,6 +104,9 @@ public struct NotionPage: Sendable {
     /// The files the page holds inside itself (`data:` addresses), for the importer to write beside the note. Its
     /// blocks link to each by the file's `placeholder` until then.
     public var heldFiles: [NotionHeldFile] = []
+    /// The tables of the databases the page shows inline, by the database's identifier: since 2025 an inline
+    /// database has no page of its own, only its CSV and its rows, so its base is made from the table shown here.
+    public var inlineDatabases: [String: NotionDatabaseTable] = [:]
 }
 
 /// A file a page holds inside itself, as a `data:` address: a picture pasted into Notion, written out as an attachment.
@@ -167,8 +186,8 @@ public struct NotionPageReader {
     private var findings: [NotionPageFinding] = []
     private var pageIdentifier: String?
     private var headingTextByBlock: [String: String] = [:]
-    private var flattenedColumnLayoutCount = 0
     private var droppedBlockColorCount = 0
+    private var inlineDatabases: [String: NotionDatabaseTable] = [:]
     private var heldFiles: [NotionHeldFile] = []
 
     /// Reads `html`, the page found at `exportPath` in the export.
@@ -212,13 +231,14 @@ public struct NotionPageReader {
         var propertyTypes: [(name: String, type: PropertyType)] = []
         if let table = document.firstElement(where: { $0.tagName == "table" && $0.hasClass("properties") }) {
             for row in table.descendants(where: { $0.tagName == "tr" }) {
-                guard let property = readProperty(row) else { continue }
-                frontMatter.set(property.name, to: property.value)
-                propertyTypes.append((property.name, property.type))
+                for property in readProperty(row) {
+                    frontMatter.set(property.name, to: property.value)
+                    propertyTypes.append((property.name, property.type))
+                }
             }
         }
         if let header = document.firstElement(where: { $0.tagName == "header" }) {
-            if frontMatter["icon"] == nil, let icon = readIcon(in: header) {
+            if frontMatter["icon"] == nil, let icon = readIcon(in: header) ?? NotionPageReader.articleIcon(article) {
                 frontMatter.set("icon", to: .text(icon))
                 propertyTypes.append(("icon", .text))
             }
@@ -238,23 +258,20 @@ public struct NotionPageReader {
         }
         var database: NotionDatabaseTable?
         if let body {
-            if let table = body.elementChildren.first, table.tagName == "table", table.hasClass("collection-content"),
-                let pageIdentifier, let own = resolver.target(ofPage: pageIdentifier), !own.isBase
+            if let table = NotionPageReader.databaseTable(firstIn: body),
+                let pageIdentifier, let own = resolver.target(ofPage: pageIdentifier), own.embeddedBase == nil
             {
                 note(.simplified, "the export holds none of the database's rows, so its table was written as a Markdown table")
                 blocks.append(databaseTable(table))
                 blocks.append(contentsOf: self.blocks(of: Array(body.elementChildren.dropFirst())))
-            } else if let table = body.elementChildren.first, table.tagName == "table", table.hasClass("collection-content") {
+            } else if let table = NotionPageReader.databaseTable(firstIn: body) {
                 database = readDatabaseTable(table)
+                // Where the table was, for a page written as a note embedding its base.
+                blocks.append(.paragraph([.wikiLink(target: NotionPageReader.databaseTablePlaceholder, label: nil, isEmbed: true)]))
                 blocks.append(contentsOf: self.blocks(of: Array(body.elementChildren.dropFirst())))
             } else {
                 blocks.append(contentsOf: self.blocks(of: body.children))
             }
-        }
-        if flattenedColumnLayoutCount > 0 {
-            note(.simplified, flattenedColumnLayoutCount == 1
-                ? "a layout in columns was flattened into one column, the columns one after the other"
-                : "\(flattenedColumnLayoutCount) layouts in columns were flattened into one column, the columns one after the other")
         }
         if droppedBlockColorCount > 0 {
             note(.simplified, droppedBlockColorCount == 1
@@ -262,7 +279,24 @@ public struct NotionPageReader {
                 : "the colors of \(droppedBlockColorCount) blocks were dropped: Markdown gives a block no color")
         }
         return NotionPage(identifier: pageIdentifier, title: title, frontMatter: frontMatter, propertyTypes: propertyTypes,
-                          blocks: blocks, database: database, findings: findings, heldFiles: heldFiles)
+                          blocks: blocks, database: database, findings: findings, heldFiles: heldFiles,
+                          inlineDatabases: inlineDatabases)
+    }
+
+    /// The wiki link target standing for a database's table in the blocks of its page, until the importer embeds the base.
+    public static let databaseTablePlaceholder = "notion-database-table"
+
+    /// The table of a database's page: the first element of its body, or since 2025 the table inside the
+    /// `collection-content-wrapper` that is.
+    static func databaseTable(firstIn body: HTMLNode) -> HTMLNode? {
+        guard let first = body.elementChildren.first else { return nil }
+        if first.tagName == "table", first.hasClass("collection-content") { return first }
+        if first.tagName == "div", first.hasClass("collection-content-wrapper"),
+            let table = first.elementChildren.first(where: { $0.tagName == "table" && $0.hasClass("collection-content") })
+        {
+            return table
+        }
+        return nil
     }
 
     private mutating func note(_ severity: ImportReport.Severity, _ message: String) {
@@ -274,11 +308,30 @@ public struct NotionPageReader {
 
     private func readIcon(in header: HTMLNode) -> String? {
         guard let holder = header.firstDescendant(where: { $0.hasClass("page-header-icon") }) else { return nil }
+        if let emoji = NotionPageReader.emoji(in: holder) { return emoji }
         if let image = holder.firstDescendant(where: { $0.tagName == "img" }), let source = image.attributes["src"] {
             return imageReference(source, asWikiLink: true)
         }
         let text = holder.textContent.trimmingSpacesAndLineBreaks()
         return text.isEmpty ? nil : text
+    }
+
+    /// The emoji of an icon: the text of its `span.icon`, or, since 2025, its `data-emoji` with no text.
+    static func emoji(in holder: HTMLNode) -> String? {
+        if let emoji = holder.attributes["data-emoji"] ?? holder.firstDescendant(where: { $0.attributes["data-emoji"] != nil })?.attributes["data-emoji"],
+            !emoji.trimmingSpaces().isEmpty
+        {
+            return emoji.trimmingSpaces()
+        }
+        return nil
+    }
+
+    /// The emoji the page's `article` names as its icon (`data-notion-page-icon`), not a picture's address.
+    static func articleIcon(_ article: HTMLNode?) -> String? {
+        guard let icon = article?.attributes["data-notion-page-icon"]?.trimmingSpaces(), !icon.isEmpty,
+            !icon.contains(text: "/"), !icon.contains(text: ".")
+        else { return nil }
+        return icon
     }
 
     /// An image's source as a property or link: a wiki link to the attachment when it is in the export, else its URL.
@@ -293,7 +346,7 @@ public struct NotionPageReader {
 
     private static let blockTags: Set<String> = [
         "p", "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "blockquote", "figure", "pre", "hr", "div", "details",
-        "table", "nav", "section", "article", "header", "summary", "audio", "video", "iframe", "li",
+        "table", "nav", "section", "article", "header", "summary", "audio", "video", "iframe", "li", "aside",
     ]
 
     private static func isBlock(_ node: HTMLNode) -> Bool {
@@ -306,18 +359,32 @@ public struct NotionPageReader {
     private mutating func blocks(of nodes: [HTMLNode]) -> [MarkdownBlock] {
         var result: [MarkdownBlock] = []
         var inlineRun: [HTMLNode] = []
+        // Links to pages one after the other are lines of one block, as Notion draws them: a compact list.
+        var previousWasPageLink = false
         func flush(into result: inout [MarkdownBlock], reader: inout NotionPageReader) {
             guard !inlineRun.isEmpty else { return }
             let inlines = reader.inlines(of: inlineRun)
-            if !MarkdownInlineNormalizer.isBlank(inlines) { result.append(.paragraph(inlines)) }
+            if !MarkdownInlineNormalizer.isBlank(inlines) {
+                result.append(.paragraph(inlines))
+                previousWasPageLink = false
+            }
             inlineRun = []
         }
         for node in nodes {
             if NotionPageReader.isBlock(node) {
                 flush(into: &result, reader: &self)
-                for block in blocks(ofElement: node) {
-                    NotionPageReader.appendJoiningLists(block, to: &result)
+                let isPageLink = node.tagName == "figure" && node.hasClass("link-to-page")
+                let produced = blocks(ofElement: node)
+                if isPageLink, previousWasPageLink, produced.count == 1, case .paragraph(let link) = produced[0],
+                    case .paragraph(let previous)? = result.last
+                {
+                    result[result.count - 1] = .paragraph(previous + [.lineBreak] + link)
+                } else {
+                    for block in produced {
+                        NotionPageReader.appendJoiningLists(block, to: &result)
+                    }
                 }
+                if !produced.isEmpty { previousWasPageLink = isPageLink }
             } else {
                 inlineRun.append(node)
             }
@@ -344,39 +411,48 @@ public struct NotionPageReader {
             .flatMap { $0 == "default" || $0 == "default_background" ? nil : $0 }
         switch tag {
         case "p", "section", "article", "header", "li":
-            if blockColor != nil { droppedBlockColorCount += 1 }
-            return blocks(of: element.children)
+            let content = blocks(of: element.children)
+            return blockColor.map { NotionPageReader.colored(content, color: $0) } ?? content
         case "h1", "h2", "h3", "h4", "h5", "h6":
             let level = Int(String(tag.dropFirst())) ?? 1
             let text = inlines(of: element.children)
-            // A heading's color, most often a background, becomes a highlight of its text, as a colored text does.
-            if let blockColor, blockColor != "gray", !MarkdownInlineNormalizer.isBlank(text) {
-                return [.heading(level: level, [.highlight(text)])]
+            // A heading's color is its text's: a text color as that color, a background as a highlight.
+            if let blockColor, !MarkdownInlineNormalizer.isBlank(text) {
+                return [.heading(level: level, NotionColors.coloredBlock(text, color: blockColor))]
             }
-            if blockColor != nil { droppedBlockColorCount += 1 }
             return [.heading(level: level, text)]
+        case "aside":
+            if element.hasClass("callout") || element.attributes["data-notion-callout"] != nil { return [callout(of: element)] }
+            return blocks(of: element.children)
         case "ul" where element.hasClass("toggle"):
             return element.elementChildren.flatMap { item in blocks(of: item.children) }
         case "ul":
-            if blockColor != nil { droppedBlockColorCount += 1 }
-            return [.bulletList(listItems(of: element))]
+            let items = listItems(of: element)
+            return [.bulletList(blockColor.map { color in NotionPageReader.colored(items, color: color) } ?? items)]
         case "ol":
-            if blockColor != nil { droppedBlockColorCount += 1 }
+            if let blockColor {
+                let start = Int(element.attributes["start"] ?? "") ?? 1
+                return [.numberedList(start: start, NotionPageReader.colored(listItems(of: element), color: blockColor))]
+            }
             let start = Int(element.attributes["start"] ?? "") ?? 1
             return [.numberedList(start: start, listItems(of: element))]
         case "blockquote":
-            if blockColor != nil { droppedBlockColorCount += 1 }
-            let content = blocks(of: element.children)
+            let content = blockColor.map { NotionPageReader.colored(blocks(of: element.children), color: $0) } ?? blocks(of: element.children)
             return content.isEmpty ? [] : [.quote(content)]
         case "figure":
-            if blockColor != nil { droppedBlockColorCount += 1 }
-            return blocks(ofFigure: element)
+            let content = blocks(ofFigure: element)
+            guard let blockColor, !element.hasClass("callout") else { return content }
+            let colored = NotionPageReader.colored(content, color: blockColor)
+            if colored == content { droppedBlockColorCount += 1 }
+            return colored
         case "pre":
+            if blockColor != nil { droppedBlockColorCount += 1 }
             return [codeBlock(of: element)]
         case "hr":
             return [.thematicBreak]
         case "details":
-            return blocks(ofToggle: element)
+            let toggle = blocks(ofToggle: element)
+            return blockColor.map { NotionPageReader.colored(toggle, color: $0) } ?? toggle
         case "table":
             if element.hasClass("collection-content") {
                 return blocks(ofInlineDatabase: element, holder: element.parent)
@@ -387,10 +463,8 @@ public struct NotionPageReader {
             note(.simplified, "a navigation block (\(element.classes.joined(separator: " "))) was left out")
             return []
         case "div":
-            if element.hasClass("column-list") {
-                let columns = element.elementChildren.filter { $0.hasClass("column") }
-                flattenedColumnLayoutCount += 1
-                return columns.flatMap { blocks(of: $0.children) }
+            if element.hasClass("column-list") || element.attributes["data-notion-column-list"] != nil {
+                return columnLayout(element)
             }
             if element.hasClass("collection-content") {
                 if let table = element.firstDescendant(where: { $0.tagName == "table" }) {
@@ -413,6 +487,75 @@ public struct NotionPageReader {
         }
     }
 
+    /// Columns as a `[!multi-column]` callout, each column a `[!blank]` callout of its blocks, the layout of Modular
+    /// CSS Layout that Graphite and Obsidian with that snippet draw. A column wider than the narrowest is `wide-2` to
+    /// `wide-5`, its share of the width. A layout of one column is its blocks.
+    private mutating func columnLayout(_ list: HTMLNode) -> [MarkdownBlock] {
+        let columns = list.elementChildren.filter { $0.hasClass("column") }
+        guard columns.count > 1 else { return columns.flatMap { blocks(of: $0.children) } }
+        let ratios = columns.map { column -> Double in
+            if let ratio = column.attributes["data-notion-column-ratio"].flatMap(Double.init), ratio > 0 { return ratio }
+            return NotionPageReader.percentWidth(in: column.attributes["style"]) ?? 1
+        }
+        let narrowest = ratios.min() ?? 1
+        let body = zip(columns, ratios).map { column, ratio -> MarkdownBlock in
+            let share = max(1, min(5, Int((ratio / narrowest).rounded())))
+            return .callout(type: share > 1 ? "blank|wide-\(share)" : "blank", title: [], folding: .notFoldable,
+                            body: blocks(of: column.children))
+        }
+        return [.callout(type: "multi-column", title: [], folding: .notFoldable, body: body)]
+    }
+
+    /// The percentage a `style` gives as `width:25%`, `nil` without one.
+    static func percentWidth(in style: String?) -> Double? {
+        guard let style, let range = style.range(ofText: "width:") else { return nil }
+        let value = style[range.upperBound...].prefix(while: { $0.isNumber || $0 == "." || $0 == " " })
+        guard style[range.upperBound...].dropFirst(value.count).first == "%" else { return nil }
+        return Double(value.trimmingSpaces())
+    }
+
+    /// The width in pixels a `style` gives as `width:720px`, `nil` without one.
+    static func pixelWidth(in style: String?) -> Int? {
+        guard let style, let range = style.range(ofText: "width:") else { return nil }
+        let value = style[range.upperBound...].prefix(while: { $0.isNumber || $0 == "." || $0 == " " })
+        guard style[range.upperBound...].dropFirst(value.count).hasPrefix("px"), let width = Double(value.trimmingSpaces()) else { return nil }
+        return Int(width.rounded())
+    }
+
+    /// `blocks` in Notion's block color `color`: the text of their paragraphs and headings colored, a background as a
+    /// highlight.
+    static func colored(_ blocks: [MarkdownBlock], color: String) -> [MarkdownBlock] {
+        blocks.map { block in
+            switch block {
+            case .paragraph(let inlines) where holdsText(inlines): return .paragraph(NotionColors.coloredBlock(inlines, color: color))
+            case .heading(let level, let inlines) where holdsText(inlines):
+                return .heading(level: level, NotionColors.coloredBlock(inlines, color: color))
+            case .callout(let type, let title, let folding, let body) where holdsText(title):
+                return .callout(type: type, title: NotionColors.coloredBlock(title, color: color), folding: folding, body: body)
+            case .quote(let content): return .quote(colored(content, color: color))
+            default: return block
+            }
+        }
+    }
+
+    /// `items` in the block color `color`, the blocks of each.
+    static func colored(_ items: [MarkdownListItem], color: String) -> [MarkdownListItem] {
+        items.map { item in
+            var item = item
+            item.blocks = colored(item.blocks, color: color)
+            return item
+        }
+    }
+
+    /// Whether inline content holds text a color can show on, not only embeds and links to files.
+    private static func holdsText(_ inlines: [MarkdownInline]) -> Bool {
+        !MarkdownInlineNormalizer.plainText(of: inlines.filter { inline in
+            if case .wikiLink(_, _, true) = inline { return false }
+            if case .image = inline { return false }
+            return true
+        }).trimmingSpaces().isEmpty
+    }
+
     private mutating func listItems(of list: HTMLNode) -> [MarkdownListItem] {
         var items: [MarkdownListItem] = []
         for item in list.elementChildren where item.tagName == "li" {
@@ -428,7 +571,9 @@ public struct NotionPageReader {
                 }
             }
             if checkbox == nil, list.hasClass("to-do-list") { checkbox = false }
-            items.append(MarkdownListItem(checkbox: checkbox, blocks: blocks(of: content)))
+            let itemColor = item.classes.compactMap(NotionColors.colorName(fromClass:)).first
+            let itemBlocks = blocks(of: content)
+            items.append(MarkdownListItem(checkbox: checkbox, blocks: itemColor.map { NotionPageReader.colored(itemBlocks, color: $0) } ?? itemBlocks))
         }
         return items
     }
@@ -451,8 +596,10 @@ public struct NotionPageReader {
         var result: [MarkdownBlock]
         if figure.hasClass("callout") {
             result = [callout(of: figure)]
-        } else if figure.hasClass("equation") {
-            let tex = figure.firstDescendant(where: { $0.tagName == "annotation" })?.textContent ?? ""
+        } else if figure.hasClass("equation") || figure.attributes["data-notion-equation"] != nil {
+            let tex = figure.attributes["data-notion-equation"]
+                ?? figure.firstDescendant(where: { $0.attributes["data-notion-equation"] != nil })?.attributes["data-notion-equation"]
+                ?? figure.firstDescendant(where: { $0.tagName == "annotation" })?.textContent ?? ""
             result = [.mathBlock(tex)]
         } else if figure.hasClass("link-to-page") {
             result = linkToPage(figure)
@@ -464,7 +611,12 @@ public struct NotionPageReader {
             result = image(of: figure)
         } else if let source = figure.firstDescendant(where: { $0.hasClass("source") }) {
             if let link = source.firstDescendant(where: { $0.tagName == "a" }), let href = link.attributes["href"] {
-                result = [embedOrLink(href)]
+                let alias = link.attributes["data-notion-file-alias"].flatMap { $0.isEmpty ? nil : $0 }
+                if href.lowercased().hasSuffix(".html"), case .attachment(let target) = resolve(href: href) {
+                    result = [.paragraph([.wikiLink(target: target, label: alias, isEmbed: false)])]
+                } else {
+                    result = [embedOrLink(href)]
+                }
             } else {
                 result = blocks(of: source.children)
             }
@@ -485,7 +637,9 @@ public struct NotionPageReader {
         let contentHolder = parts.last
         var icon: (emoji: String?, name: String?)?
         if parts.count >= 2, let iconHolder = parts.first {
-            if let image = iconHolder.firstDescendant(where: { $0.tagName == "img" }) {
+            if let emoji = NotionPageReader.emoji(in: iconHolder) ?? figure.attributes["data-notion-callout-icon"].flatMap({ $0.isEmpty ? nil : $0 }) {
+                icon = (emoji, nil)
+            } else if let image = iconHolder.firstDescendant(where: { $0.tagName == "img" }) {
                 icon = (nil, NotionCallouts.iconName(fromSource: image.attributes["src"] ?? ""))
             } else {
                 let emoji = iconHolder.textContent.trimmingSpacesAndLineBreaks()
@@ -507,7 +661,11 @@ public struct NotionPageReader {
             title = inlines(of: Array(titleNodes))
             content = Array(content.dropFirst(titleNodes.count))
         }
-        let type = NotionCallouts.calloutType(emoji: icon?.emoji, iconName: icon?.name)
+        // The callout's color is its type's where it has one (a red callout is `[!danger]`), else its icon decides.
+        let background = figure.attributes["data-notion-callout-background"]
+            ?? figure.classes.compactMap(NotionColors.colorName(fromClass:)).first
+        let type = background.flatMap(NotionColors.calloutType(forBackground:))
+            ?? NotionCallouts.calloutType(emoji: icon?.emoji, iconName: icon?.name)
         if let emoji = icon?.emoji {
             title = MarkdownInlineNormalizer.isBlank(title) ? [.text(emoji)] : [.text(emoji + " ")] + title
         }
@@ -571,7 +729,9 @@ public struct NotionPageReader {
         }
         let link = figure.firstDescendant(where: { $0.tagName == "a" })?.attributes["href"]
         if let target = holdFile(source) ?? attachmentTarget(forHref: source) ?? link.flatMap({ attachmentTarget(forHref: $0) }) {
-            return [.paragraph([.wikiLink(target: target, label: nil, isEmbed: true)])]
+            // The width Notion shows the picture at, as Obsidian's `![[x.png|720]]`.
+            let width = NotionPageReader.pixelWidth(in: image.attributes["style"]).map { String($0) }
+            return [.paragraph([.wikiLink(target: target, label: width, isEmbed: true)])]
         }
         if let mark = missingPicture(source) { return [.paragraph([mark])] }
         return [.paragraph([.image(source: source, alternativeText: image.attributes["alt"] ?? "")])]
@@ -644,8 +804,9 @@ public struct NotionPageReader {
 
     private mutating func blocks(ofInlineDatabase table: HTMLNode, holder: HTMLNode?) -> [MarkdownBlock] {
         let identifier = holder?.attributes["id"].flatMap(NotionPageReader.hyphenatedIdentifier)
-        if let identifier, let target = resolver.target(ofPage: identifier), target.isBase {
-            return [.paragraph([.wikiLink(target: target.linkTarget, label: nil, isEmbed: true)])]
+        if let identifier, let base = resolver.target(ofPage: identifier)?.embeddedBase {
+            if inlineDatabases[identifier] == nil { inlineDatabases[identifier] = readDatabaseTable(table) }
+            return [.paragraph([.wikiLink(target: base, label: nil, isEmbed: true)])]
         }
         // Else the database whose folder holds the rows the table links to.
         if let href = table.firstDescendant(where: { $0.hasClass("cell-title") })?
@@ -655,14 +816,19 @@ public struct NotionPageReader {
             if rowPath.count >= 2, let folder = rowPath.dropLast().last {
                 let databasePath = Array(rowPath.dropLast(2)) + [folder + ".html"]
                 if let databaseIdentifier = resolver.pageIdentifier(atExportPath: databasePath),
-                    let target = resolver.target(ofPage: databaseIdentifier), target.isBase
+                    let base = resolver.target(ofPage: databaseIdentifier)?.embeddedBase
                 {
-                    return [.paragraph([.wikiLink(target: target.linkTarget, label: nil, isEmbed: true)])]
+                    return [.paragraph([.wikiLink(target: base, label: nil, isEmbed: true)])]
                 }
             }
         }
         let name = holder?.firstDescendant(where: { $0.hasClass("collection-title") })?.textContent
             .trimmingSpacesAndLineBreaks() ?? ""
+        // A linked view whose filter shows no row names its database by its title alone.
+        if !name.isEmpty, let base = resolver.database(titled: name)?.embeddedBase {
+            note(.simplified, "the view “\(name)” of a database shows the database's base, without the view's own filter, which the export does not give")
+            return [.paragraph([.wikiLink(target: base, label: nil, isEmbed: true)])]
+        }
         note(.simplified, "the database \(name.isEmpty ? "without a title" : "“\(name)”") is not in the export, so its table was written as a Markdown table")
         var result: [MarkdownBlock] = []
         if !name.isEmpty { result.append(.paragraph([.strong([.text(name)])])) }
@@ -694,10 +860,15 @@ public struct NotionPageReader {
         let headerCells = table.descendants(where: { $0.tagName == "th" })
         let columns = headerCells.map { cell -> NotionDatabaseTable.Column in
             let typeClass = cell.firstDescendant(where: { $0.tagName == "svg" })?.classes.first(where: { $0.hasPrefix("types") })
+            // Since 2025 the column's type is the name of its icon's picture (`…/icons/calendar_gray.svg`).
+            let iconType = cell.firstDescendant(where: { $0.tagName == "img" })?.attributes["src"]
+                .flatMap(NotionPropertyReader.notionType(ofIconAddress:))
             return NotionDatabaseTable.Column(name: textWithoutIcons(cell).trimmingSpacesAndLineBreaks(),
-                                              notionType: typeClass.map(NotionPropertyReader.notionType(ofIconClass:)),
-                                              isTitle: typeClass == "typesTitle")
+                                              notionType: typeClass.map(NotionPropertyReader.notionType(ofIconClass:)) ?? iconType,
+                                              isTitle: typeClass == "typesTitle" || iconType == "title")
         }
+        let widths = table.firstDescendant(where: { $0.tagName == "colgroup" })?.elementChildren
+            .filter { $0.tagName == "col" }.map { NotionPageReader.percentWidth(in: $0.attributes["style"]) } ?? []
         var identifiers: [String] = []
         var titles: [String] = []
         for row in table.descendants(where: { $0.tagName == "tr" && $0.parent?.tagName == "tbody" }) {
@@ -718,7 +889,8 @@ public struct NotionPageReader {
         {
             tableColumns[titleIndex].isTitle = true
         }
-        return NotionDatabaseTable(columns: tableColumns, rowPageIdentifiers: identifiers, rowTitles: titles)
+        return NotionDatabaseTable(columns: tableColumns, rowPageIdentifiers: identifiers, rowTitles: titles,
+                                   columnWidths: widths.count == tableColumns.count ? widths : [])
     }
 
     private mutating func tableOfContents(_ navigation: HTMLNode) -> [MarkdownBlock] {
@@ -792,13 +964,10 @@ public struct NotionPageReader {
             case "u":
                 result.append(.underline(inlines(of: node.children)))
             case "mark":
-                let color = node.classes.first(where: { $0.hasPrefix("highlight-") }).map { String($0.dropFirst("highlight-".count)) } ?? ""
+                let color = node.classes.compactMap(NotionColors.colorName(fromClass:)).first
+                    ?? node.attributes["data-notion-highlight"].flatMap { $0 == "default" ? nil : $0 }
                 let children = inlines(of: node.children)
-                if color == "default" || color == "gray" || color.isEmpty {
-                    result.append(contentsOf: children)
-                } else {
-                    result.append(.highlight(children))
-                }
+                result.append(contentsOf: color.map { NotionColors.colored(children, color: $0) } ?? children)
             case "code":
                 result.append(.code(node.textContent))
             case "a":
@@ -817,8 +986,9 @@ public struct NotionPageReader {
                     }
                 }
             case "span":
-                if node.hasClass("notion-text-equation-token") {
-                    result.append(.math(node.firstDescendant(where: { $0.tagName == "annotation" })?.textContent ?? ""))
+                if node.hasClass("notion-text-equation-token") || node.attributes["data-notion-inline-equation"] != nil {
+                    result.append(.math(node.attributes["data-notion-inline-equation"]
+                        ?? node.firstDescendant(where: { $0.tagName == "annotation" })?.textContent ?? ""))
                 } else if node.hasClass("icon") {
                     continue
                 } else if (node.attributes["style"] ?? "").contains(text: "border-bottom:0.05em solid") {
@@ -901,7 +1071,7 @@ public struct NotionPageReader {
             switch inline {
             case .code: return true
             case .strong(let children), .emphasis(let children), .strikethrough(let children), .highlight(let children),
-                .underline(let children):
+                .underline(let children), .textColor(_, let children), .backgroundColor(_, let children):
                 return holdsCode(children)
             default: return false
             }
@@ -968,7 +1138,12 @@ public struct NotionPageReader {
         if lowered.hasPrefix("mailto:") || lowered.hasPrefix("tel:") || href.contains(text: "://") {
             return .external(href)
         }
-        let withoutFragment = href.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false)
+        // A phone number or an e-mail address of a property, which Notion links as written.
+        if let number = NotionPageReader.phoneNumber(href) { return .external("tel:" + number) }
+        if NotionPageReader.isEmailAddress(href) { return .external("mailto:" + href.trimmingSpaces()) }
+        // A `#` is a fragment only when no folder follows it: a folder's name may hold one (`Meeting #11/a.png`).
+        let fragmentSplit = href.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false)
+        let withoutFragment = fragmentSplit.count > 1 && fragmentSplit[1].contains("/") ? [Substring(href)] : fragmentSplit
         let path = percentDecoded(String(withoutFragment[0]))
         let fragment = withoutFragment.count > 1 ? String(withoutFragment[1]) : nil
         let components = resolvedComponents(path)
@@ -983,6 +1158,7 @@ public struct NotionPageReader {
                 let blockIdentifier = fragment.flatMap(NotionPageReader.hyphenatedIdentifier)
                 return .page(target, heading: blockIdentifier.flatMap { heading(inPage: identifier, block: $0) })
             }
+            if let target = resolver.attachmentTarget(atExportPath: components) { return .attachment(target) }
             return .unresolved(name?.title ?? String(last.dropLast(".html".count)))
         }
         if let target = resolver.attachmentTarget(atExportPath: components) {
@@ -1033,6 +1209,25 @@ public struct NotionPageReader {
         return (page, address.fragment.flatMap(hyphenatedIdentifier))
     }
 
+    /// The number a phone number written as text dials (`+41 79 123 45 67` gives `+41791234567`), `nil` for text that
+    /// is no phone number.
+    static func phoneNumber(_ text: String) -> String? {
+        let trimmed = text.trimmingSpaces()
+        guard let first = trimmed.first, first == "+" || first.isNumber,
+            trimmed.allSatisfy({ $0.isNumber || " +()-./".contains($0) })
+        else { return nil }
+        let dialed = trimmed.filter { $0.isNumber || $0 == "+" }
+        return dialed.filter({ $0.isNumber }).count >= 6 ? dialed : nil
+    }
+
+    /// Whether `text` is an e-mail address written as text: one `@`, a dot after it, no space or slash.
+    static func isEmailAddress(_ text: String) -> Bool {
+        let trimmed = text.trimmingSpaces()
+        let parts = trimmed.split(separator: "@", omittingEmptySubsequences: false)
+        guard parts.count == 2, !parts[0].isEmpty, parts[1].contains("."), !parts[1].hasSuffix(".") else { return false }
+        return !trimmed.contains(where: { $0.isWhitespace || $0 == "/" || $0 == ":" })
+    }
+
     /// The page identifier a name ends with, after a `-` or a space, or that the name is: 32 hexadecimal digits.
     static func trailingIdentifier(of name: String) -> String? {
         let digits = String(name.suffix(32))
@@ -1051,11 +1246,11 @@ public struct NotionPageReader {
 
     // MARK: Properties
 
-    private mutating func readProperty(_ row: HTMLNode) -> NotionPropertyReader.Property? {
+    private mutating func readProperty(_ row: HTMLNode) -> [NotionPropertyReader.Property] {
         guard let name = row.elementChildren.first(where: { $0.tagName == "th" }).map({ textWithoutIcons($0) })?
             .trimmingSpacesAndLineBreaks(), !name.isEmpty,
             let cell = row.elementChildren.first(where: { $0.tagName == "td" })
-        else { return nil }
+        else { return [] }
         let notionType = row.classes.first(where: { $0.hasPrefix("property-row-") })
             .map { String($0.dropFirst("property-row-".count)) } ?? "text"
         let links = cell.descendants(where: { $0.tagName == "a" }).map { anchor -> String in
@@ -1074,7 +1269,12 @@ public struct NotionPageReader {
         var reader = NotionPropertyReader(dateParser: dateParser)
         let property = reader.read(name: name, notionType: notionType, cell: cell, links: links)
         if let warning = reader.warning { note(.simplified, warning) }
-        return property
+        guard let property else { return [] }
+        if let end = reader.rangeEnd {
+            note(.simplified, NotionPropertyReader.rangeMessage(property: name))
+            return [property, end]
+        }
+        return [property]
     }
 }
 

@@ -6,8 +6,8 @@
  *              linked build, the `importer` command and the tests.
  *
  * Authors: Bahey Shalash
- * Version: 0.1
- * Date: 27/11/2026
+ * Version: 0.2
+ * Date: 28/11/2026
  */
 
 import Foundation
@@ -29,7 +29,13 @@ public actor FileRandomAccessSource: RandomAccessSource {
         guard offset <= size else {
             throw RandomAccessSourceError.rangeOutsideSource(offset: offset, count: count, size: size)
         }
+        #if os(WASI)
         try handle.seek(toOffset: offset)
         return [UInt8](try handle.read(upToCount: count) ?? Data())
+        #else
+        // Read through the descriptor: the handle's reads leave their buffers to an autorelease pool, which an
+        // import's tasks never drain, so 33 GB read stayed 33 GB held.
+        return try FileDescriptorIO.read(handle.fileDescriptor, at: offset, count: Int(min(UInt64(count), size - offset)))
+        #endif
     }
 }

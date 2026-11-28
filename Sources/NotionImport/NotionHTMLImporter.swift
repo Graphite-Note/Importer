@@ -7,7 +7,7 @@
  *              attachments in pieces, assigns the property types and writes the import report.
  *
  * Authors: Bahey Shalash
- * Version: 0.3
+ * Version: 0.4
  * Date: 28/11/2026
  */
 
@@ -140,6 +140,8 @@ public enum NotionHTMLImporter {
         }
 
         var wasCancelled = false
+        var writtenDatabases: Set<String> = []
+        var onceFindings: Set<String> = []
         let total = export.pages.count
         for (index, page) in export.pages.enumerated() {
             if Task.isCancelled {
@@ -153,14 +155,32 @@ public enum NotionHTMLImporter {
                 let read = NotionPageReader.read(html: html, exportPath: page.file.pathComponents, resolver: plan,
                                                  dateParser: dateParser)
                 for finding in read.findings {
+                    if finding.message.hasPrefix("ranges of dates in the property") || finding.message.hasPrefix("numbers of the property") {
+                        if onceFindings.insert(finding.message).inserted { report.record(finding.severity, at: nil, finding.message) }
+                        continue
+                    }
                     report.record(finding.severity, at: placement.path, finding.message)
+                }
+                for (identifier, table) in read.inlineDatabases.sorted(by: { $0.key < $1.key })
+                where plan.databasesWithoutPage.contains(identifier) && !writtenDatabases.contains(identifier) {
+                    guard let databasePlacement = plan.placement(ofPage: identifier) else { continue }
+                    writtenDatabases.insert(identifier)
+                    let databasePage = NotionPage(identifier: identifier, title: plan.title(ofPage: identifier) ?? "", frontMatter: FrontMatter(),
+                                                  propertyTypes: [], blocks: [], database: table, findings: [])
+                    try await writeBase(table, page: databasePage, placement: databasePlacement, export: export, plan: &plan,
+                                        dateParser: dateParser, destination: destination, report: &report,
+                                        assignType: { name, type, path, report in assign(name, type, at: path, report: &report) })
                 }
                 if let database = read.database {
                     try await writeBase(database, page: read, placement: placement, export: export, plan: &plan,
                                         dateParser: dateParser, destination: destination, report: &report,
                                         assignType: { name, type, path, report in assign(name, type, at: path, report: &report) })
-                } else {
-                    var blocks = read.blocks
+                }
+                if read.database == nil || placement.basePath != nil {
+                    // A database's page with its own text, icon or cover: its note, the base embedded where the table was.
+                    let embed = placement.basePath.flatMap { _ in plan.target(ofPage: page.identifier)?.baseLinkTarget }
+                    let placeholder = [NotionPageReader.databaseTablePlaceholder: embed ?? NotionPageReader.databaseTablePlaceholder]
+                    var blocks = MarkdownBlockLinks.replacingTargets(in: read.blocks, placeholder)
                     if !read.heldFiles.isEmpty {
                         blocks = try await writeHeldFiles(read.heldFiles, of: blocks, placement: placement, plan: &plan,
                                                           destination: destination, report: &report)
@@ -172,6 +192,25 @@ public enum NotionHTMLImporter {
                 }
             } catch {
                 report.record(.failed, at: placement.path, "\(page.file.origin) could not be imported: \(ImportReport.text(describing: error)).")
+            }
+        }
+
+        // Databases with no page of their own that no page showed: their base from their CSV's columns.
+        for identifier in plan.databasesWithoutPage where !writtenDatabases.contains(identifier) && !wasCancelled {
+            guard let placement = plan.placement(ofPage: identifier), let csv = export.csvFiles[identifier] else { continue }
+            do {
+                let header = CSVTable(String(decoding: try await csv.contents(), as: UTF8.self)).header
+                let columns = header.enumerated().map { index, name in
+                    NotionDatabaseTable.Column(name: name, notionType: nil, isTitle: index == 0)
+                }
+                let table = NotionDatabaseTable(columns: columns, rowPageIdentifiers: [], rowTitles: [])
+                let databasePage = NotionPage(identifier: identifier, title: plan.title(ofPage: identifier) ?? "", frontMatter: FrontMatter(),
+                                              propertyTypes: [], blocks: [], database: table, findings: [])
+                try await writeBase(table, page: databasePage, placement: placement, export: export, plan: &plan,
+                                    dateParser: dateParser, destination: destination, report: &report,
+                                    assignType: { name, type, path, report in assign(name, type, at: path, report: &report) })
+            } catch {
+                report.record(.failed, at: placement.path, "\(csv.origin) could not be imported: \(ImportReport.text(describing: error)).")
             }
         }
 
@@ -236,10 +275,23 @@ public enum NotionHTMLImporter {
             if name != column.name { displayNames.append((name, column.name)) }
             order.append(name)
         }
-        let base = BaseFile(folder: rowsFolder, displayNames: displayNames, views: [BaseFile.View(type: "table", name: "Table", order: order)])
-        try await destination.writeNewFile(Array(base.yaml.utf8), at: placement.path)
-        report.recordWritten(.base, at: placement.path)
-        if !MarkdownInlineNormalizer.isBlank(page.blocks.flatMap { block -> [MarkdownInline] in
+        var view = BaseFile.View(type: "table", name: "Table", order: order)
+        // The columns' widths, as the table's share of a page Notion shows at 720 points, wider for many columns.
+        if database.columnWidths.count == database.columns.count {
+            let tableWidth = Double(max(720, 160 * database.columns.count))
+            var nonTitleIndex = 1
+            for (column, width) in zip(database.columns, database.columnWidths) {
+                let key = column.isTitle ? "file.name" : "note." + order[min(nonTitleIndex, order.count - 1)]
+                if !column.isTitle { nonTitleIndex += 1 }
+                if let width { view.columnSizes.append((key, max(60, Int((width / 100 * tableWidth).rounded())))) }
+            }
+        }
+        let base = BaseFile(folder: rowsFolder, displayNames: displayNames, views: [view])
+        let basePath = placement.basePath ?? placement.path
+        try await destination.writeNewFile(Array(base.yaml.utf8), at: basePath)
+        report.recordWritten(.base, at: basePath)
+        let pageText = page.blocks.filter { $0 != .paragraph([.wikiLink(target: NotionPageReader.databaseTablePlaceholder, label: nil, isEmbed: true)]) }
+        if placement.basePath == nil, !MarkdownInlineNormalizer.isBlank(pageText.flatMap { block -> [MarkdownInline] in
             if case .paragraph(let inlines) = block { return inlines }
             return [.text("x")]
         }) {
@@ -250,11 +302,15 @@ public enum NotionHTMLImporter {
         guard let csvFile = export.csvFiles[page.identifier ?? ""] else { return }
         let table = CSVTable(String(decoding: try await csvFile.contents(), as: UTF8.self))
         guard let titleColumn = database.columns.first(where: { $0.isTitle })?.name ?? table.header.first else { return }
-        var pageTitles = Dictionary(grouping: database.rowPageIdentifiers.compactMap { identifier in
-            plan.placement(ofPage: identifier) != nil ? plan.title(ofPage: identifier) : nil
-        }, by: { $0 }).mapValues({ $0.count })
+        // The rows that have a page: those the table lists, and every note placed in the rows' folder (a table may
+        // show some rows only).
+        var rowIdentifiers = Set(database.rowPageIdentifiers.filter { plan.placement(ofPage: $0) != nil })
+        rowIdentifiers.formUnion(plan.notePages(inFolder: rowsFolder))
+        var pageTitles = Dictionary(grouping: rowIdentifiers.compactMap { identifier in plan.title(ofPage: identifier) },
+                                    by: { $0 }).mapValues({ $0.count })
         var columnTypes: [String: String] = [:]
         for column in database.columns { columnTypes[column.name] = column.notionType }
+        var rowsFromCSV = 0
         for row in table.rows {
             let title = table.value(titleColumn, in: row)
             if let count = pageTitles[title], count > 0 {
@@ -264,14 +320,20 @@ public enum NotionHTMLImporter {
             var frontMatter = FrontMatter()
             for column in table.header where column != titleColumn {
                 let text = table.value(column, in: row).trimmingSpacesAndLineBreaks()
-                guard let (name, value, type) = csvProperty(column, text: text, notionType: columnTypes[column], dateParser: dateParser) else { continue }
-                frontMatter.set(name, to: value)
-                assignType(name, type, rowsFolder, &report)
+                for (name, value, type) in csvProperties(column, text: text, notionType: columnTypes[column], dateParser: dateParser) {
+                    frontMatter.set(name, to: value)
+                    assignType(name, type, rowsFolder, &report)
+                }
             }
             let path = plan.claimNote(titled: title, in: rowsFolder)
             try await destination.writeNewFile(Array(frontMatter.yaml.utf8), at: path)
             report.recordWritten(.note, at: path)
-            report.record(.simplified, at: path, "this row has no page in the export, so it was made from the database's CSV, with its properties only")
+            rowsFromCSV += 1
+        }
+        if rowsFromCSV > 0 {
+            report.record(.simplified, at: placement.basePath ?? placement.path, rowsFromCSV == 1
+                ? "a row has no page in the export, which gives a row's page only when it holds text: it was made from the database's CSV, with its properties"
+                : "\(rowsFromCSV) rows have no page in the export, which gives a row's page only when it holds text: they were made from the database's CSV, with their properties")
         }
     }
 
@@ -319,6 +381,16 @@ public enum NotionHTMLImporter {
         }
     }
 
+    /// The properties a CSV cell gives: one, or two for a range of dates (its start and `<column> end`).
+    private static func csvProperties(_ column: String, text: String, notionType: String?,
+                                      dateParser: NotionDateParser) -> [(String, PropertyValue, PropertyType)] {
+        if ["date", "created_time", "last_edited_time"].contains(notionType ?? ""), let dates = dateParser.parseRange(text), dates.count == 2 {
+            let type: PropertyType = dates.contains(where: { $0.time != nil }) ? .datetime : .date
+            return [(column, .date(dates[0].propertyText), type), (column + " end", .date(dates[1].propertyText), type)]
+        }
+        return csvProperty(column, text: text, notionType: notionType, dateParser: dateParser).map { [$0] } ?? []
+    }
+
     private static func csvProperty(_ column: String, text: String, notionType: String?,
                                     dateParser: NotionDateParser) -> (String, PropertyValue, PropertyType)? {
         guard !text.isEmpty else { return nil }
@@ -357,6 +429,25 @@ struct NotionPageSummary: Sendable {
     /// Whether the export holds the pages of a database's rows: its table links to files of the export (an export
     /// whose rows link to notion.so lacks them), or it has no row.
     var hasRowsInExport: Bool
+    /// Whether a database's page has more than its table: an icon, a cover, a description or blocks around the table.
+    var hasPageContent: Bool
+
+    /// Whether a database's page holds more than its table: an icon, a cover, a description, or blocks after the table.
+    static func databasePageHasContent(_ html: String) -> Bool {
+        if html.contains(text: "class=\"page-header-icon") || html.contains(text: "class=\"page-cover-image\"") { return true }
+        if let description = html.range(ofText: "class=\"page-description\""),
+            let open = html[description.upperBound...].firstIndex(of: ">"),
+            !html[html.index(after: open)...].hasPrefix("</p>")
+        {
+            return true
+        }
+        guard let table = html.range(ofText: "<table class=\"collection-content\">"),
+            let end = html.range(ofText: "</table>", in: table.upperBound..<html.endIndex),
+            let article = html.range(ofText: "</article>", in: end.upperBound..<html.endIndex)
+        else { return false }
+        let after = html[end.upperBound..<article.lowerBound].replacingEvery("</div>", with: "")
+        return !after.trimmingSpacesAndLineBreaks().isEmpty
+    }
 
     /// The export paths of the HTML files `html` links to, from the folder `folder` it is in.
     static func linkedHTMLPaths(in html: String, from folder: [String]) -> [String] {
@@ -400,6 +491,7 @@ struct NotionPageSummary: Sendable {
         } ?? ""
         self.title = title.isEmpty ? titleFromName : title
         isDatabase = html.contains(text: "<div class=\"page-body\"><table class=\"collection-content\">")
+            || html.contains(text: "<div class=\"page-body\"><div class=\"collection-content-wrapper\"><table class=\"collection-content\">")
         var rowCount = 0
         var rowsInExport = 0
         var rowSearch = html.startIndex
@@ -412,6 +504,7 @@ struct NotionPageSummary: Sendable {
             }
         }
         hasRowsInExport = rowCount == 0 || rowsInExport > 0
+        hasPageContent = isDatabase && NotionPageSummary.databasePageHasContent(html)
         var headings: [String: String] = [:]
         for level in 1...3 {
             var searchStart = html.startIndex

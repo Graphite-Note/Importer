@@ -8,7 +8,7 @@
  *              which is refused.
  *
  * Authors: Bahey Shalash
- * Version: 0.3
+ * Version: 0.4
  * Date: 28/11/2026
  */
 
@@ -41,8 +41,7 @@ struct NotionFixtureImportTests {
         let result = try await importFixture("notion-testspace.zip", into: vault)
         #expect(result.report.writtenCount(of: .note) == 4)
         #expect(result.report.writtenCount(of: .attachment) == 5)
-        // The one finding: a paragraph's background color, which Markdown cannot give a block.
-        #expect(result.report.findings.map(\.message) == ["the color of a block was dropped: Markdown gives a block no color"])
+        #expect(result.report.findings.isEmpty)
         #expect(result.reportPath.description == "Notion/Notion import report.md")
 
         let notes = vault.filePaths().filter { $0.hasSuffix(".md") }

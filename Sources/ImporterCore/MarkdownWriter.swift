@@ -7,7 +7,7 @@
  *              and nested lists in the form Obsidian and Graphite read.
  *
  * Authors: Bahey Shalash
- * Version: 0.3
+ * Version: 0.4
  * Date: 28/11/2026
  */
 
@@ -133,7 +133,7 @@ public enum MarkdownWriter {
             case .text(let text): return text
             case .math: return "$x$"
             case .strong(let children), .emphasis(let children), .strikethrough(let children), .highlight(let children),
-                .underline(let children):
+                .underline(let children), .textColor(_, let children), .backgroundColor(_, let children):
                 return dollarText(of: children)
             case .link(_, let label): return dollarText(of: label)
             case .lineBreak: return " "
@@ -180,7 +180,10 @@ public enum MarkdownWriter {
                 for line in itemLines { lines.append(line.isEmpty ? "" : indent + line) }
                 continue
             }
-            let first = itemLines[0].isEmpty ? itemMarker : itemMarker + " " + itemLines[0]
+            // An item without text holds a no-break space: a bare `-` cannot start a list under a line of text, where
+            // Markdown reads it as that line's underline (a heading) or as text.
+            let isEmpty = rendered.isEmpty && item.checkbox == nil
+            let first = isEmpty ? itemMarker + " \u{00A0}" : itemLines[0].isEmpty ? itemMarker : itemMarker + " " + itemLines[0]
             lines.append(first)
             for line in itemLines.dropFirst() {
                 lines.append(line.isEmpty ? "" : indent + line)
@@ -250,6 +253,10 @@ public enum MarkdownWriter {
             return wrap(children, delimiter: "==", context: context, precededBy: preceding, followedBy: following)
         case .underline(let children):
             return wrapInTags(children, opening: "<u>", closing: "</u>", context: context)
+        case .textColor(let color, let children):
+            return wrapInTags(children, opening: "<span style=\"color:" + color + "\">", closing: "</span>", context: context)
+        case .backgroundColor(let color, let children):
+            return wrapInTags(children, opening: "<mark style=\"background:" + color + "\">", closing: "</mark>", context: context)
         case .code(let code):
             let flat = code.replacingEvery("\n", with: " ")
             guard !flat.isEmpty else { return "" }
@@ -483,11 +490,24 @@ public enum MarkdownWriter {
                 result += !isInsideWord && startsTag(characters, after: index, following: following) ? "\\#" : "#"
             case "|":
                 result += context.isInTableCell ? "\\|" : "|"
+            case "&":
+                result += startsEntity(characters, after: index) ? "\\&" : "&"
             default:
                 result.append(character)
             }
         }
         return result
+    }
+
+    /// Whether the `&` at `index` starts what Markdown reads as an HTML entity: `&nbsp;`, `&#233;`, `&#xE9;`.
+    private static func startsEntity(_ characters: [Character], after index: Int) -> Bool {
+        var position = index + 1
+        if position < characters.count, characters[position] == "#" { position += 1 }
+        let start = position
+        while position < characters.count, characters[position].isASCII, characters[position].isLetter || characters[position].isNumber {
+            position += 1
+        }
+        return position > start && position < characters.count && characters[position] == ";"
     }
 
     /// Whether the `#` at `index` starts an Obsidian tag: digits, then a letter, `-`, `_`, `/` or a character beyond
@@ -631,6 +651,8 @@ public enum MarkdownInlineNormalizer {
 
     private enum Style: Hashable {
         case strong, emphasis, strikethrough, highlight, underline
+        case textColor(String)
+        case backgroundColor(String)
     }
 
     private static func style(of inline: MarkdownInline) -> (Style, [MarkdownInline])? {
@@ -640,6 +662,8 @@ public enum MarkdownInlineNormalizer {
         case .strikethrough(let children): return (.strikethrough, children)
         case .highlight(let children): return (.highlight, children)
         case .underline(let children): return (.underline, children)
+        case .textColor(let color, let children): return (.textColor(color), children)
+        case .backgroundColor(let color, let children): return (.backgroundColor(color), children)
         default: return nil
         }
     }
@@ -651,6 +675,8 @@ public enum MarkdownInlineNormalizer {
         case .strikethrough: return .strikethrough(children)
         case .highlight: return .highlight(children)
         case .underline: return .underline(children)
+        case .textColor(let color): return .textColor(color, children)
+        case .backgroundColor(let color): return .backgroundColor(color, children)
         }
     }
 
@@ -738,7 +764,7 @@ public enum MarkdownInlineNormalizer {
             case .text(let text): return text.allSatisfy({ $0.isWhitespace })
             case .lineBreak: return true
             case .strong(let children), .emphasis(let children), .strikethrough(let children), .highlight(let children),
-                .underline(let children):
+                .underline(let children), .textColor(_, let children), .backgroundColor(_, let children):
                 return isBlank(children)
             default: return false
             }
@@ -751,7 +777,7 @@ public enum MarkdownInlineNormalizer {
             switch inline {
             case .text(let text), .code(let text), .math(let text), .markdown(let text): return text
             case .strong(let children), .emphasis(let children), .strikethrough(let children),
-                .highlight(let children), .underline(let children):
+                .highlight(let children), .underline(let children), .textColor(_, let children), .backgroundColor(_, let children):
                 return plainText(of: children)
             case .link(_, let label): return plainText(of: label)
             case .wikiLink(let target, let label, _): return label ?? target

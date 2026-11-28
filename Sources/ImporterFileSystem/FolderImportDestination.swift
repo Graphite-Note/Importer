@@ -6,7 +6,7 @@
  *              and hosts that need no coordination of their writes, its files named as the vault paths spell them.
  *
  * Authors: Bahey Shalash
- * Version: 0.5
+ * Version: 0.6
  * Date: 28/11/2026
  */
 
@@ -60,7 +60,7 @@ public struct FolderImportDestination: ImportDestination {
 
     public func writeNewFile(_ contents: [UInt8], at path: VaultPath) async throws {
         let handle = try createFile(at: path)
-        try handle.write(contentsOf: contents)
+        try FileDescriptorIO.write(handle.fileDescriptor, contents)
         try handle.close()
     }
 
@@ -165,7 +165,7 @@ extension FolderImportDestination: UpdatingImportDestination {
         guard descriptor >= 0 else { throw FolderImportDestinationError.systemCall("open", errno, path) }
         let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
         do {
-            try handle.write(contentsOf: contents)
+            try FileDescriptorIO.write(handle.fileDescriptor, contents)
             try handle.close()
         } catch {
             unlink(temporary)
@@ -204,7 +204,11 @@ actor FolderImportFileWriter: ImportFileWriting {
     }
 
     func append(_ bytes: [UInt8]) throws {
+        #if os(WASI)
         try handle.write(contentsOf: bytes)
+        #else
+        try FileDescriptorIO.write(handle.fileDescriptor, bytes)
+        #endif
     }
 
     func close() throws {

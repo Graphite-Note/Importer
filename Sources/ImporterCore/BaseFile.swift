@@ -6,8 +6,8 @@
  *              it names and its views, written as the YAML Obsidian and Graphite read.
  *
  * Authors: Bahey Shalash
- * Version: 0.3
- * Date: 27/11/2026
+ * Version: 0.4
+ * Date: 28/11/2026
  */
 
 /// A base showing the notes of one folder.
@@ -31,6 +31,8 @@ public struct BaseFile: Equatable, Sendable {
         /// The property a card shows as its picture, and how it fits (`cover`, `contain`).
         public var image: String?
         public var imageFit: String?
+        /// The widths of the table's columns in points, by the key `file.name` or `note.<property>`.
+        public var columnSizes: [(property: String, width: Int)] = []
 
         public init(type: String, name: String, order: [String], groupBy: (property: String, direction: String)? = nil, groupOrder: [String] = [],
                     sort: [(property: String, direction: String)] = [], filters: [String] = [], image: String? = nil, imageFit: String? = nil) {
@@ -51,6 +53,8 @@ public struct BaseFile: Equatable, Sendable {
                 && left.groupOrder == right.groupOrder && left.filters == right.filters && left.image == right.image && left.imageFit == right.imageFit
                 && left.sort.count == right.sort.count
                 && zip(left.sort, right.sort).allSatisfy { $0.property == $1.property && $0.direction == $1.direction }
+                && left.columnSizes.count == right.columnSizes.count
+                && zip(left.columnSizes, right.columnSizes).allSatisfy { $0.property == $1.property && $0.width == $1.width }
         }
     }
 
@@ -117,6 +121,10 @@ public struct BaseFile: Equatable, Sendable {
             if !view.order.isEmpty {
                 lines.append("    order:")
                 lines.append(contentsOf: view.order.map { "      - \(YAMLScalar.quotedIfNeeded($0))" })
+            }
+            if !view.columnSizes.isEmpty {
+                lines.append("    columnSize:")
+                lines.append(contentsOf: view.columnSizes.map { "      \(YAMLScalar.quotedIfNeeded($0.property)): \($0.width)" })
             }
             if !view.sort.isEmpty {
                 lines.append("    sort:")

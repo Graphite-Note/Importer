@@ -8,8 +8,8 @@
  *              nested zip, a path that leaves the export, and a vault that already has some of the names and types.
  *
  * Authors: Bahey Shalash
- * Version: 0.2
- * Date: 27/11/2026
+ * Version: 0.3
+ * Date: 28/11/2026
  */
 
 import Foundation
@@ -139,10 +139,10 @@ struct NotionMadeUpExportTests {
         #expect(course.contains("See [[Week 1]] and [[\(longStem)|the long one]]."))
         #expect(course.contains("> [!note]- Hidden part\n> Inside the toggle."))
         #expect(course.contains("> [!warning] ⚠️ Mind the **deadline**\n> It is on Friday."))
-        #expect(course.contains("Left\n\nRight"))
+        #expect(course.contains("> [!multi-column]\n> > [!blank]\n> > Left\n>\n> > [!blank]\n> > Right\n"))
         #expect(course.contains("```cpp\nint main() { return 0; }\n```"))
         #expect(course.contains("Energy $E = mc^2$ costs \\$5 and \\#tag."))
-        #expect(course.contains("![[diagram.png]]"))
+        #expect(course.contains("![[diagram.png|400]]"))
         #expect(course.contains("![[Lectures.base]]"))
         // Two notes called Notes in two folders: each link names its path.
         #expect(course.contains("[[School/Notion/Course 2/Notes|Notes]]"))
@@ -152,7 +152,6 @@ struct NotionMadeUpExportTests {
         #expect(vault.exists("School/Notion/Course 2/\(longStem).md"))
         #expect(try vault.text("School/Notion/Course 2/Week 1.md") == "Back to [[Course 2|the course]].\n")
         let findings = result.report.findings.map(\.message)
-        #expect(findings.contains("a layout in columns was flattened into one column, the columns one after the other"))
         #expect(findings.contains { $0.contains("../escape.html was not read") })
     }
 

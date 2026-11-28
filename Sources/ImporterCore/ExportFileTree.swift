@@ -7,8 +7,8 @@
  *              file is read piece by piece when its turn comes.
  *
  * Authors: Bahey Shalash
- * Version: 0.2
- * Date: 27/11/2026
+ * Version: 0.3
+ * Date: 28/11/2026
  */
 
 /// A reader of one export file's bytes, piece by piece.
@@ -96,10 +96,11 @@ public struct ExportFileTree: Sendable {
         self.skippedEntries = skippedEntries
     }
 
-    /// The files of the zip archives `sources`, named `sourceNames` in messages. A zip inside one of them is read as
-    /// part of the export, its files placed at the path of the zip's folder: Notion's large exports are a zip of
-    /// `Part-N` zips. A nested zip stored without compression is read where it lies, a compressed one is first
-    /// inflated into `temporaryStorage`.
+    /// The files of the zip archives `sources`, named `sourceNames` in messages. A zip at the top of one of them is read
+    /// as part of the export, its files placed at the path of the zip's folder: Notion's large exports are a zip of
+    /// `Part-N` zips. A zip inside a folder is a file a page holds (an attachment), copied as it is and never opened.
+    /// A nested zip stored without compression is read where it lies, a compressed one is first inflated into
+    /// `temporaryStorage`.
     public static func reading(zipArchives sources: [any RandomAccessSource], named sourceNames: [String],
                                temporaryStorage: any TemporaryStorage, nestingDepthLimit: Int = 2) async throws -> ExportFileTree {
         var files: [ExportFile] = []
@@ -128,7 +129,7 @@ public struct ExportFileTree: Sendable {
                 skipped.append(SkippedExportEntry(origin: origin, reason: "it is encrypted"))
                 continue
             }
-            if components.last?.lowercased().hasSuffix(".zip") == true, depth < depthLimit {
+            if components.count == 1, components[0].lowercased().hasSuffix(".zip"), depth < depthLimit {
                 do {
                     let nestedSource = try await nestedArchiveSource(of: entry, in: archive, temporaryStorage: temporaryStorage)
                     let nested = try await ZipArchive.open(nestedSource)
