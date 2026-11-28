@@ -8,7 +8,7 @@
  *              nested zip, a path that leaves the export, and a vault that already has some of the names and types.
  *
  * Authors: Bahey Shalash
- * Version: 0.3
+ * Version: 0.4
  * Date: 28/11/2026
  */
 
@@ -135,10 +135,13 @@ struct NotionMadeUpExportTests {
         let course = try vault.text("School/Notion/Course 2.md")
         let longStem = VaultFileName.stem(forTitle: longTitle)
         #expect(longStem.utf8.count <= VaultFileName.maximumStemByteCount)
-        #expect(course.hasPrefix("---\nicon: 🎓\n---\n"))
+        // Numbered beside the note the vault had, the note keeps the page's title, and so does one whose title was cut.
+        #expect(course.hasPrefix("---\nicon: 🎓\ntitle: Course\naliases:\n  - Course\n---\n"), "\(course)")
+        #expect(try vault.text("School/Notion/Course 2/\(longStem).md").contains("title: \(longTitle)\n"))
         #expect(course.contains("See [[Week 1]] and [[\(longStem)|the long one]]."))
         #expect(course.contains("> [!note]- Hidden part\n> Inside the toggle."))
-        #expect(course.contains("> [!warning] ⚠️ Mind the **deadline**\n> It is on Friday."))
+        // A callout's icon heads it, its text is its body, as Notion draws it.
+        #expect(course.contains("> [!warning] ⚠️\n> Mind the **deadline**\n>\n> It is on Friday."), "\(course)")
         #expect(course.contains("> [!multi-column]\n> > [!blank]\n> > Left\n>\n> > [!blank]\n> > Right\n"))
         #expect(course.contains("```cpp\nint main() { return 0; }\n```"))
         #expect(course.contains("Energy $E = mc^2$ costs \\$5 and \\#tag."))
@@ -169,7 +172,7 @@ struct NotionMadeUpExportTests {
                 displayName: Tags
             views:
               - type: table
-                name: Table
+                name: Lectures
                 order:
                   - file.name
                   - Date

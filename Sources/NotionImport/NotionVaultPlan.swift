@@ -7,7 +7,7 @@
  *              identifier whatever the names Notion shortened.
  *
  * Authors: Bahey Shalash
- * Version: 0.5
+ * Version: 0.6
  * Date: 28/11/2026
  */
 
@@ -433,6 +433,25 @@ struct NotionVaultPlan: NotionLinkResolving, Sendable {
     func rowsFolder(ofDatabase identifier: String) -> VaultPath? {
         guard let folder = placements[identifier]?.childFolder, !notePages(inFolder: folder).isEmpty else { return nil }
         return folder
+    }
+
+    func rowsHaveShownTitles(inFolder folder: VaultPath) -> Bool {
+        notePages(inFolder: folder).contains { shownTitle(ofPage: $0) != nil }
+    }
+
+    /// The page's whole title where its note is not named by it (characters a file name cannot hold, a long title cut,
+    /// a number telling two pages of one title apart), `nil` where it is.
+    func shownTitle(ofPage identifier: String) -> String? {
+        guard let placement = placements[identifier], let title = titles[identifier] else { return nil }
+        let notePath = placement.isBase && placement.basePath == nil ? nil : placement.path
+        return notePath.flatMap { NotionVaultPlan.shownTitle(title, ofNoteAt: $0) }
+    }
+
+    /// `title`, its spaces as Notion shows them, where the note at `path` is not named by it.
+    static func shownTitle(_ title: String, ofNoteAt path: VaultPath) -> String? {
+        let whole = title.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+        let name = path.name.hasSuffix(".md") ? String(path.name.dropLast(3)) : path.name
+        return whole.isEmpty || whole == name ? nil : whole
     }
 
     private func databaseIdentifier(titled title: String) -> String? {

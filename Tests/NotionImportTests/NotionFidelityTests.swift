@@ -11,7 +11,7 @@
  *              first, the default highlight, a toggle heading with math and a view that shows no row.
  *
  * Authors: Bahey Shalash
- * Version: 0.1
+ * Version: 0.2
  * Date: 28/11/2026
  */
 
@@ -99,6 +99,8 @@ private let boardBody = """
     data-notion-callout-background="gray_background" dir="ltr"><div><img class="icon notion-static-icon" \
     src="https://app.notion.com/icons/exclamation-mark-double_red.svg"/></div><div style="width:100%">Mind the date.</div></aside>\
     <p id="p6" class="" dir="auto"><mark class="highlight-default_background" data-notion-highlight="default_background">Plain</mark> text.</p>\
+    <p id="p8" class="" dir="auto"><mark class="highlight-red" data-notion-highlight="red">See <strong><code>fft</code> first</strong> now</mark>, \
+    then a =~ b.</p>\
     <details open="" class="" dir="auto"><summary style="font-weight:600;font-size:1.5em;line-height:1.3;margin:0">\
     <h2 id="\(toggleHeading)" style="display:inline-block">Distributions of <span data-notion-inline-equation="v_x" \
     class="notion-text-equation-token" contenteditable="false"><span class="katex">vx</span></span></h2></summary>\
@@ -216,6 +218,8 @@ struct NotionFidelityTests {
         #expect(note.hasPrefix("- [[#Step 2: azimuth $\\alpha$|Step 2: azimuth α]]\n"), "\(note)")
         #expect(note.contains("`Model: `**`Ellipse 2`** and `ssh -T git@example.com`."), "\(note)")
         #expect(note.contains("Plain text."), "\(note)")
+        // A color leaves code and math uncolored, reported, and text that reads as a color marker is escaped.
+        #expect(note.contains("~={#e05a52}See=~ **`fft`** ~={#e05a52}**first** now=~, then a =\\~ b."), "\(note)")
         #expect(note.contains("\n## Distributions of $v_x$\n\nInside.\n"), "\(note)")
     }
 
@@ -229,7 +233,7 @@ struct NotionFidelityTests {
         // An empty paragraph between two links to pages is a gap: the links stay two paragraphs.
         #expect(note.contains("[[Projects.base|Projects]]\n\n[[Notes]]\n"), "\(note)")
         #expect(note.contains("A[ ](https://example.com/space)gap, nothing[](https://example.com/none)here, _[[Brakes]]_ next."), "\(note)")
-        #expect(note.contains("> [!important] ‼️ Mind the date.\n"), "\(note)")
+        #expect(note.contains("> [!important] ‼️\n> Mind the date.\n"), "\(note)")
     }
 
     @Test("A property without a name is named Untitled, once in the report")

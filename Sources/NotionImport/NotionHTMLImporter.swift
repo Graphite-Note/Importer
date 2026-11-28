@@ -7,7 +7,7 @@
  *              attachments in pieces, assigns the property types and writes the import report.
  *
  * Authors: Bahey Shalash
- * Version: 0.5
+ * Version: 0.6
  * Date: 28/11/2026
  */
 
@@ -187,7 +187,14 @@ public enum NotionHTMLImporter {
                         blocks = try await writeHeldFiles(read.heldFiles, of: blocks, placement: placement, plan: &plan,
                                                           destination: destination, report: &report)
                     }
-                    let contents = read.frontMatter.yaml + MarkdownWriter.markdown(for: blocks)
+                    // A title the note's name cannot hold stays whole: as its `title`, and as an alias links can name.
+                    var frontMatter = read.frontMatter
+                    if let title = plan.shownTitle(ofPage: page.identifier) {
+                        frontMatter.set("title", to: .text(title))
+                        frontMatter.set("aliases", to: .list([title]))
+                        assign("title", .text, at: placement.path, report: &report)
+                    }
+                    let contents = frontMatter.yaml + MarkdownWriter.markdown(for: blocks)
                     try await destination.writeNewFile(Array(contents.utf8), at: placement.path)
                     report.recordWritten(.note, at: placement.path)
                     for (name, type) in read.propertyTypes { assign(name, type, at: placement.path, report: &report) }
@@ -266,8 +273,62 @@ public enum NotionHTMLImporter {
         let rowsFolder = rowsInFolder.sorted { left, right in
             left.value != right.value ? left.value > right.value : left.key.description < right.key.description
         }.first?.key ?? placement.childFolder ?? placement.path.parent ?? plan.rootFolder
-        let (view, displayNames) = database.baseView(named: "Table")
-        let base = BaseFile(folder: rowsFolder, displayNames: displayNames, views: [view])
+        // Rows the table lists whose page the export lacks, read from the database's CSV, made first: the base shows
+        // the rows' whole titles where a note's name could not hold one, which only naming the notes tells.
+        var csvTitlesShown = false
+        if let csvFile = export.csvFiles[page.identifier ?? ""] {
+            let table = CSVTable(String(decoding: try await csvFile.contents(), as: UTF8.self))
+            if let titleColumn = database.columns.first(where: { $0.isTitle })?.name ?? table.header.first {
+                // The rows that have a page: those the table lists, and every note placed in the rows' folder (a table
+                // may show some rows only).
+                var rowIdentifiers = Set(database.rowPageIdentifiers.filter { plan.placement(ofPage: $0) != nil })
+                rowIdentifiers.formUnion(plan.notePages(inFolder: rowsFolder))
+                var pageTitles = Dictionary(grouping: rowIdentifiers.compactMap { identifier in plan.title(ofPage: identifier) },
+                                            by: { $0 }).mapValues({ $0.count })
+                var columnTypes: [String: String] = [:]
+                for column in database.columns { columnTypes[column.name] = column.notionType }
+                var rowsFromCSV = 0
+                for row in table.rows {
+                    let title = table.value(titleColumn, in: row)
+                    if let count = pageTitles[title], count > 0 {
+                        pageTitles[title] = count - 1
+                        continue
+                    }
+                    var frontMatter = FrontMatter()
+                    for column in table.header where column != titleColumn {
+                        let text = table.value(column, in: row).trimmingSpacesAndLineBreaks()
+                        let named = NotionPropertyReader.propertyName(column)
+                        for (name, value, type) in csvProperties(named, text: text, notionType: columnTypes[named], dateParser: dateParser) {
+                            frontMatter.set(name, to: value)
+                            assignType(name, type, rowsFolder, &report)
+                        }
+                    }
+                    let path = plan.claimNote(titled: title, in: rowsFolder)
+                    if let shown = NotionVaultPlan.shownTitle(title, ofNoteAt: path) {
+                        frontMatter.set("title", to: .text(shown))
+                        frontMatter.set("aliases", to: .list([shown]))
+                        assignType("title", .text, rowsFolder, &report)
+                        csvTitlesShown = true
+                    }
+                    try await destination.writeNewFile(Array(frontMatter.yaml.utf8), at: path)
+                    report.recordWritten(.note, at: path)
+                    rowsFromCSV += 1
+                }
+                if rowsFromCSV > 0 {
+                    report.record(.simplified, at: placement.basePath ?? placement.path, rowsFromCSV == 1
+                        ? "a row has no page in the export, which gives a row's page only when it holds text: it was made from the database's CSV, with its properties"
+                        : "\(rowsFromCSV) rows have no page in the export, which gives a row's page only when it holds text: they were made from the database's CSV, with their properties")
+                }
+            }
+        }
+
+        // A base over a folder it shares with other pages (its rows beside them) cannot know which notes will keep a
+        // whole title, so it shows titles too: a note without one shows its name.
+        let sharesFolder = rowsFolder != placement.childFolder
+        // The export names no view: the one view is the database's title, which Notion shows above its table.
+        let (view, displayNames, formulas) = database.baseView(
+            named: page.title.isEmpty ? "Table" : page.title, showsTitles: csvTitlesShown || sharesFolder || plan.rowsHaveShownTitles(inFolder: rowsFolder))
+        let base = BaseFile(folder: rowsFolder, displayNames: displayNames, views: [view], formulas: formulas)
         let basePath = placement.basePath ?? placement.path
         try await destination.writeNewFile(Array(base.yaml.utf8), at: basePath)
         report.recordWritten(.base, at: basePath)
@@ -277,45 +338,6 @@ public enum NotionHTMLImporter {
             return [.text("x")]
         }) {
             report.record(.simplified, at: placement.path, "the text on the database's page, above or below its table, was left out: a base holds no text")
-        }
-
-        // Rows the table lists whose page the export lacks, read from the database's CSV.
-        guard let csvFile = export.csvFiles[page.identifier ?? ""] else { return }
-        let table = CSVTable(String(decoding: try await csvFile.contents(), as: UTF8.self))
-        guard let titleColumn = database.columns.first(where: { $0.isTitle })?.name ?? table.header.first else { return }
-        // The rows that have a page: those the table lists, and every note placed in the rows' folder (a table may
-        // show some rows only).
-        var rowIdentifiers = Set(database.rowPageIdentifiers.filter { plan.placement(ofPage: $0) != nil })
-        rowIdentifiers.formUnion(plan.notePages(inFolder: rowsFolder))
-        var pageTitles = Dictionary(grouping: rowIdentifiers.compactMap { identifier in plan.title(ofPage: identifier) },
-                                    by: { $0 }).mapValues({ $0.count })
-        var columnTypes: [String: String] = [:]
-        for column in database.columns { columnTypes[column.name] = column.notionType }
-        var rowsFromCSV = 0
-        for row in table.rows {
-            let title = table.value(titleColumn, in: row)
-            if let count = pageTitles[title], count > 0 {
-                pageTitles[title] = count - 1
-                continue
-            }
-            var frontMatter = FrontMatter()
-            for column in table.header where column != titleColumn {
-                let text = table.value(column, in: row).trimmingSpacesAndLineBreaks()
-                let named = NotionPropertyReader.propertyName(column)
-                for (name, value, type) in csvProperties(named, text: text, notionType: columnTypes[named], dateParser: dateParser) {
-                    frontMatter.set(name, to: value)
-                    assignType(name, type, rowsFolder, &report)
-                }
-            }
-            let path = plan.claimNote(titled: title, in: rowsFolder)
-            try await destination.writeNewFile(Array(frontMatter.yaml.utf8), at: path)
-            report.recordWritten(.note, at: path)
-            rowsFromCSV += 1
-        }
-        if rowsFromCSV > 0 {
-            report.record(.simplified, at: placement.basePath ?? placement.path, rowsFromCSV == 1
-                ? "a row has no page in the export, which gives a row's page only when it holds text: it was made from the database's CSV, with its properties"
-                : "\(rowsFromCSV) rows have no page in the export, which gives a row's page only when it holds text: they were made from the database's CSV, with their properties")
         }
     }
 

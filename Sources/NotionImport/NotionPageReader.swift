@@ -8,7 +8,7 @@
  *              link resolved by page identifier.
  *
  * Authors: Bahey Shalash
- * Version: 0.5
+ * Version: 0.6
  * Date: 28/11/2026
  */
 
@@ -63,6 +63,8 @@ public protocol NotionLinkResolving {
     func rowsFolder(ofDatabaseTitled title: String) -> VaultPath?
     /// The folder of the rows of the database `identifier` when some row has a note in it, else `nil`.
     func rowsFolder(ofDatabase identifier: String) -> VaultPath?
+    /// Whether some note in `folder` is not named by its page's whole title, which its `title` property then keeps.
+    func rowsHaveShownTitles(inFolder folder: VaultPath) -> Bool
 }
 
 extension NotionLinkResolving {
@@ -70,6 +72,7 @@ extension NotionLinkResolving {
     public func rowNotes(_ rowIdentifiers: [String]) -> (folder: VaultPath, notes: [VaultPath], isEveryNote: Bool)? { nil }
     public func rowsFolder(ofDatabaseTitled title: String) -> VaultPath? { nil }
     public func rowsFolder(ofDatabase identifier: String) -> VaultPath? { nil }
+    public func rowsHaveShownTitles(inFolder folder: VaultPath) -> Bool { false }
 }
 
 /// A finding of reading a page, for the import report.
@@ -96,32 +99,40 @@ public struct NotionDatabaseTable: Equatable, Sendable {
     /// The share of the table's width each column takes, in percent, as its `colgroup` gives it (since 2025).
     public var columnWidths: [Double?] = []
 
-    /// The base view of this table: its columns in order, each at its width, and the names they show.
-    func baseView(named name: String) -> (view: BaseFile.View, displayNames: [(property: String, displayName: String)]) {
+    /// The formula a base shows as its rows' names where some row's note is not named by its whole title (a title a
+    /// file name cannot hold): the note's `title`, else its name without `.md`, a link to the note either way.
+    static let titleFormula = (name: "title", expression: "file.asLink(if(note.title, note.title, file.basename))")
+
+    /// The base view of this table: its columns in order, each at its width, and the names they show. With
+    /// `showsTitles` the rows' names are their whole titles (`titleFormula`), which some rows' file names cannot hold.
+    func baseView(named name: String, showsTitles: Bool = false)
+        -> (view: BaseFile.View, displayNames: [(property: String, displayName: String)], formulas: [(name: String, expression: String)])
+    {
         // The columns in the table's order, the title (the note's name) where Notion shows it.
+        let nameKey = showsTitles ? "formula." + NotionDatabaseTable.titleFormula.name : "file.name"
         var displayNames: [(property: String, displayName: String)] = []
         var order: [String] = []
         for column in columns {
             if column.isTitle {
-                displayNames.append(("file.name", column.name))
-                order.append("file.name")
+                displayNames.append((nameKey, column.name))
+                order.append(nameKey)
                 continue
             }
             let property = column.notionType == "multi_select" && column.name.lowercased() == "tags" ? "tags" : column.name
             if property != column.name { displayNames.append((property, column.name)) }
             order.append(property)
         }
-        if !order.contains("file.name") { order.insert("file.name", at: 0) }
+        if !order.contains(nameKey) { order.insert(nameKey, at: 0) }
         var view = BaseFile.View(type: "table", name: name, order: order)
         // The columns' widths, as the table's share of a page Notion shows at 720 points, wider for many columns.
         if columnWidths.count == columns.count, order.count == columns.count {
             let tableWidth = Double(max(720, 160 * columns.count))
             for (property, width) in zip(order, columnWidths) {
-                let key = property == "file.name" ? "file.name" : "note." + property
+                let key = property == nameKey ? nameKey : "note." + property
                 if let width { view.columnSizes.append((key, max(60, Int((width / 100 * tableWidth).rounded())))) }
             }
         }
-        return (view, displayNames)
+        return (view, displayNames, showsTitles ? [NotionDatabaseTable.titleFormula] : [])
     }
 }
 
@@ -312,6 +323,9 @@ public struct NotionPageReader {
             } else {
                 blocks.append(contentsOf: self.blocks(of: body.children))
             }
+        }
+        if NotionPageReader.colorsCodeOrMath(blocks) {
+            note(.simplified, "the color of code or math was left off it: no color reaches code or math in Markdown")
         }
         if droppedBlockColorCount > 0 {
             note(.simplified, droppedBlockColorCount == 1
@@ -710,10 +724,12 @@ public struct NotionPageReader {
             ?? figure.classes.compactMap(NotionColors.colorName(fromClass:)).first
         let type = background.flatMap(NotionColors.calloutType(forBackground:))
             ?? NotionCallouts.calloutType(emoji: icon?.emoji, iconName: icon?.name)
-        if let emoji = icon?.emoji {
-            title = MarkdownInlineNormalizer.isBlank(title) ? [.text(emoji)] : [.text(emoji + " ")] + title
-        }
-        return .callout(type: type, title: title, folding: .notFoldable, body: blocks(of: content))
+        // Notion's callout has no title: its icon heads it, its text is its body, plain as Notion draws it. One with no
+        // emoji is `[!type|no-title]`, which Graphite draws without a title row, where a bare `[!info]` shows "Info"
+        // (Obsidian ignores the metadata).
+        let body = (MarkdownInlineNormalizer.isBlank(title) ? [] : [MarkdownBlock.paragraph(title)]) + blocks(of: content)
+        guard let emoji = icon?.emoji else { return .callout(type: type + "|no-title", title: [], folding: .notFoldable, body: body) }
+        return .callout(type: type, title: [.text(emoji)], folding: .notFoldable, body: body)
     }
 
     private mutating func linkToPage(_ figure: HTMLNode) -> [MarkdownBlock] {
@@ -865,14 +881,15 @@ public struct NotionPageReader {
         // columns and the rows it shows.
         let shown = readDatabaseTable(table)
         if let rows = resolver.rowNotes(shown.rowPageIdentifiers) {
-            var (view, displayNames) = shown.baseView(named: name.isEmpty ? "Table" : name)
+            var (view, displayNames, formulas) = shown.baseView(named: name.isEmpty ? "Table" : name,
+                                                                showsTitles: resolver.rowsHaveShownTitles(inFolder: rows.folder))
             if !rows.isEveryNote {
                 view.anyOf = rows.notes.map { path in
                     "file.path == \"" + path.description.replacingEvery("\\", with: "\\\\").replacingEvery("\"", with: "\\\"") + "\""
                 }
                 note(.simplified, "the view \(name.isEmpty ? "" : "“\(name)” ")of a database shows the rows it showed in Notion: the export does not give the view's filter")
             }
-            let base = BaseFile(folder: rows.folder, displayNames: displayNames, views: [view])
+            let base = BaseFile(folder: rows.folder, displayNames: displayNames, views: [view], formulas: formulas)
             return [.codeBlock(language: "base", code: base.yaml)]
         }
         // Else the database whose folder holds the rows the table links to.
@@ -908,7 +925,7 @@ public struct NotionPageReader {
     /// A view of a database that shows none of its rows: a base of the rows' folder with the view's name and columns,
     /// whose filter matches no note.
     private mutating func emptyView(of table: HTMLNode, named name: String, over folder: VaultPath) -> [MarkdownBlock] {
-        var (view, displayNames) = readDatabaseTable(table).baseView(named: name)
+        var (view, displayNames, _) = readDatabaseTable(table).baseView(named: name)
         view.filters = ["file.path == \"\""]
         note(.simplified, "the view “\(name)” of a database shows no row in the export, so its base shows none: the export does not give the view's filter")
         return [.codeBlock(language: "base", code: BaseFile(folder: folder, displayNames: displayNames, views: [view]).yaml)]
@@ -1128,6 +1145,21 @@ public struct NotionPageReader {
         func attachmentTarget(atExportPath exportPath: [String]) -> String? { nil }
         func pageIdentifier(atExportPath exportPath: [String]) -> String? { nil }
         func headingText(inPage pageIdentifier: String, block blockIdentifier: String) -> String? { nil }
+    }
+
+    /// Whether some text color of `blocks` holds code or math.
+    static func colorsCodeOrMath(_ blocks: [MarkdownBlock]) -> Bool {
+        blocks.contains { block in
+            switch block {
+            case .paragraph(let inlines), .heading(_, let inlines): return MarkdownInlineNormalizer.colorsCodeOrMath(inlines)
+            case .bulletList(let items), .numberedList(_, let items): return items.contains { colorsCodeOrMath($0.blocks) }
+            case .quote(let body): return colorsCodeOrMath(body)
+            case .callout(_, let title, _, let body): return MarkdownInlineNormalizer.colorsCodeOrMath(title) || colorsCodeOrMath(body)
+            case .table(let header, let rows):
+                return (header + rows.flatMap { $0 }).contains { MarkdownInlineNormalizer.colorsCodeOrMath($0) }
+            default: return false
+            }
+        }
     }
 
     /// The styles over the whole content of `node`: the tags of the one element it holds, of the one that holds, and

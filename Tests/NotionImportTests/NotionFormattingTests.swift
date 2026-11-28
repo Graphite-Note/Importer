@@ -9,7 +9,7 @@
  *              links to pages by the identifier their address ends with, and names written composed.
  *
  * Authors: Bahey Shalash
- * Version: 0.3
+ * Version: 0.4
  * Date: 28/11/2026
  */
 
@@ -124,7 +124,8 @@ struct NotionFormattingTests {
         #expect(note.contains("Did it<em>.</em> Both <strong>So:</strong>\u{200B}Next and <strong>“</strong>We and a\u{00A0}b."), "\(note)")
         #expect(note.contains("The value of _**x = π,**_ we get."), "\(note)")
         #expect(note.contains("It costs $5 and $10.\n\nBut \\$a\\$ is not math here, \\&nbsp; is text."), "\(note)")
-        #expect(note.contains("## <mark style=\"background:rgba(212, 167, 44, 0.3)\">Mission</mark>\n"), "\(note)")
+        // The yellow background is a highlight, other backgrounds a mark in their color.
+        #expect(note.contains("## ==Mission==\n"), "\(note)")
     }
 
     @Test("A list item without text keeps its nested list under it, an empty item stays, a rule opening a note is ***")

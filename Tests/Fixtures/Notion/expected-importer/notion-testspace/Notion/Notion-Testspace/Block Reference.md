@@ -65,21 +65,26 @@ $$
 
 > This is a quote block.
 
-> [!tip] 💡 This is a callout block with an emoji icon…
+> [!tip] 💡
+> This is a callout block with an emoji icon…
+>
 > with a nested text block.
 
-> [!info] This is a callout block with a coloured Notion icon…
+> [!info|no-title]
+> This is a callout block with a coloured Notion icon…
+>
 > with a nested text block.
 
-> [!note] This is a callout block with no icon…
+> [!note|no-title]
+> This is a callout block with no icon…
 
 Below is an empty callout with an icon:
 
-> [!info]
+> [!info|no-title]
 
 Bellow is a completely empty callout:
 
-> [!note]
+> [!note|no-title]
 
 # Media Blocks
 
