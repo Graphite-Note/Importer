@@ -5,11 +5,17 @@ Layer: Tests
 Description: Where the Notion test material comes from, its license, and what each file tests.
 
 Authors: Bahey Shalash
-Version: 0.1
-Date: 26/11/2026
+Version: 0.2
+Date: 28/11/2026
 -->
 
 # Notion test material
+
+## Made for this repository
+
+`signals-and-systems.zip`: a course workspace of fictional content, "Signals & Systems", made in Notion on 2026-11-28 for the README's pictures and exported as HTML in Notion's format since 2025 (14 files, 82 KB). It holds a cover and an icon, a callout, three columns of links to pages with their icons, colored headings, a highlight, colored bold, toggle headings, equations, a checklist, code, the database Assignments and a linked view of it filtered to two rows, and rows whose titles hold a colon. Part of this repository, under its license, and free to show. Imported by `NotionReadmeDemoTests`.
+
+## From Obsidian Importer
 
 From [Obsidian Importer](https://github.com/obsidianmd/obsidian-importer), commit `fa9444a188459f227b07ec121ad03d26bd6b301a` (2026-11-12), folder `tests/notion`, fetched unchanged. MIT licensed, notice below.
 
