@@ -6,7 +6,7 @@ Description: What the Importer is, what a Notion page looks like imported, its s
              lives.
 
 Authors: Bahey Shalash
-Version: 0.5
+Version: 0.6
 Date: 28/11/2026
 -->
 
@@ -42,7 +42,7 @@ The same notes in Graphite's light appearance: the colors are Notion's, chosen t
 
 ## State
 
-Notion's HTML export and Notion's API import (version 0.5.1). A zip, several `Part-N` zips, a zip of zips or an unpacked folder is read entry by entry, never whole, with a DEFLATE decoder written in Swift. Pages become Markdown notes in the folders Notion nests them in, databases become [Obsidian Bases](https://help.obsidian.md/bases) over their rows, rows become notes with typed properties (added to `.obsidian/types.json`), attachments are copied in pieces next to their notes, links between pages are resolved by page identifier, and an import report note lists what was written, simplified and left out. Notion's Markdown & CSV export is refused with the reason.
+Notion's HTML export and Notion's API import (version 0.5.2). A zip, several `Part-N` zips, a zip of zips or an unpacked folder is read entry by entry, never whole, with a DEFLATE decoder written in Swift. Pages become Markdown notes in the folders Notion nests them in, databases become [Obsidian Bases](https://help.obsidian.md/bases) over their rows, rows become notes with typed properties (added to `.obsidian/types.json`), attachments are copied in pieces next to their notes, links between pages are resolved by page identifier, and an import report note lists what was written, simplified and left out. Notion's Markdown & CSV export is refused with the reason.
 
 Through Notion's API (since 0.3.0), with an internal integration's token that the host keeps and adds to its requests, the importer never seeing it: pages and blocks read page by page into the same notes, databases as bases with Notion's table, board, gallery and list views, their filters, sorts and groups, formulas and rollups converted to Bases formulas (with what Bases lacks reported), linked database views as views of the base they show, files Notion holds downloaded in ranges while their page is written, and Notion's limit of three requests a second kept, with waits on 429 and 5xx. Importing again into an earlier import's folder finds each note by its `notion-id`, replaces only what nobody edited since, and reports what it kept. A page's cover is its `banner` property, which Graphite and the Banners and Pixel Banner plugins draw.
 
@@ -55,7 +55,7 @@ Since 0.2.0 the importers (`ImporterCore`, `NotionImport`) use the Swift standar
 ## Using it
 
 ```swift
-.package(url: "https://github.com/Graphite-Note/Importer.git", exact: "0.5.1")
+.package(url: "https://github.com/Graphite-Note/Importer.git", exact: "0.5.2")
 ```
 
 and the product `Importer` in a target's dependencies: `ImporterCore`, `NotionImport` and `ImporterFileSystem`, which reads and writes files on disk with Foundation. `PortableImporter` is the importers without `ImporterFileSystem`, for hosts with no Foundation. An import, with the host's own source and destination in place of the ones on disk:
