@@ -293,7 +293,8 @@ struct NotionVaultPlan: NotionLinkResolving, Sendable {
 
         // A link names the note alone when no other file of the import has its name, else its path.
         var counts: [String: Int] = [:]
-        let allPaths = placements.values.map({ $0.path }) + placements.values.compactMap({ $0.basePath }) + attachmentPaths.values
+        let allPaths: [VaultPath] = placements.values.map({ $0.path }) + placements.values.compactMap({ $0.basePath })
+            + Array(attachmentPaths.values)
         for path in allPaths { counts[NotionVaultPlan.linkKey(path), default: 0] += 1 }
         for path in allPaths {
             let isNote = path.name.hasSuffix(".md")
