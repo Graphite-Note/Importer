@@ -49,9 +49,11 @@
 - > 
 - > This paragraph of the callout…  
 - >   
+- > has a _**double**_ _**linebreak**_ here.
 + >
 + > This paragraph of the callout…
 + >
++ > has a _**double linebreak**_ here.
 @@ 79
 - > [!important] _**A Formatted Callout Title**_
 - > 

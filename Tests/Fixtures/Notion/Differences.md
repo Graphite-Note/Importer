@@ -6,8 +6,8 @@ Description: Every difference between the notes this importer writes for Obsidia
              the notes Obsidian Importer expects for it, with the reason for each.
 
 Authors: Bahey Shalash
-Version: 0.2
-Date: 27/11/2026
+Version: 0.3
+Date: 28/11/2026
 -->
 
 # Differences from Obsidian Importer's notes
@@ -44,12 +44,19 @@ Only the end of the file: notes written here end with a line end, as text files 
 | 210, 214 | ` ``` ` and `#abc` inside the code block, instead of ` ```Plain ` and `\#abc`. | Notion's "Plain Text" has no highlighting, so no language is written. Upstream escapes the `#` inside a code block, where the backslash then shows, which its own page says must not happen. |
 | 220, 228 | The empty paragraph Notion leaves before "Mathematical Equations" is not written. The line comparison counts the math block and the list item after it as moved past that paragraph's lines, so they show as removed at 220 and added at 228. | Reads the same. |
 | 287 | ` ```latex ` instead of ` ```LaTeX `. | Lowercase language, as in Block Reference. |
+| 77 | `_**double linebreak**_` instead of `_**double**_ _**linebreak**_`. | Two runs of one style with a space between are one run, which reads the same. |
 | 327 | `[[Formatting Tests#Quotes, Callouts + Nesting]]` instead of `[[Formatting Tests]]`. | Notion's export leaves the heading out of the link itself but writes it in the link's text, a Notion address ending in the heading's block identifier. That identifier is a heading of the page, so the link goes to the heading. The next link points at a text block, which Obsidian cannot link to without a block identifier in the note, so it stays a link to the page. |
 | 340 | Line end at the end of the file. | As above. |
 
+The import report's one finding is about this note: a paragraph carries a block color, which Markdown cannot give a block, so the report says it was dropped. Its text keeps the highlights of its own marks.
+
 ## Upstream's database row
 
-`database-row.html` gives upstream's `expected/database-row.md` byte for byte, but for the line end at the end of the file.
+`database-row.html` gives upstream's `expected/database-row.md` byte for byte, but for the line end at the end of the file and two numbers.
+
+| Difference | Why |
+| --- | --- |
+| `Price (USD): 1234.56` instead of `$1,234.56`, `Discount: 0.15` instead of `15%` | A number property is a number, so that Bases can sort and compute with it: the amount without its currency and separators, a percent as the fraction Notion keeps (0.15 for 15 %). The format is reported. `R$67.3` stays text: its currency is written with a letter. |
 
 ## Page covers
 

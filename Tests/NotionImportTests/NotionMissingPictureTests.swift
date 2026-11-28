@@ -6,8 +6,8 @@
  *              written as embeds or images that show nothing.
  *
  * Authors: Bahey Shalash
- * Version: 0.1
- * Date: 27/11/2026
+ * Version: 0.2
+ * Date: 28/11/2026
  */
 
 import Foundation
@@ -21,7 +21,7 @@ import Testing
 struct NotionMissingPictureTests {
     private static let identifier = "9999999999999999aaaaaaaaaaaaaaaa"
 
-    @Test("A picture whose file the export lacks is kept as its name, reported, and a picture beside it still embeds")
+    @Test("A picture whose file the export lacks is marked with its name, reported, and a picture beside it still embeds")
     func missingPictureKeptAsItsName() async throws {
         let hyphenated = NotionPageReader.hyphenatedIdentifier(Self.identifier)!
         let body = """
@@ -45,10 +45,10 @@ struct NotionMissingPictureTests {
                                               importDate: "2026-11-27", exportYear: 2026)
         let result = try await NotionHTMLImporter.importExport(tree, into: FolderImportDestination(vaultFolder: vault.folder), options: options)
         let note = try vault.text("Notion/Shapes.md")
-        #expect(note == "untitled\n\n![[Untitled.png]]\n\nInline gone too.png and from the web ![](https://example.com/sun.png).\n")
+        #expect(note == "_(picture not in the export: untitled)_\n\n![[Untitled.png]]\n\nInline _(picture not in the export: gone too.png)_ and from the web ![](https://example.com/sun.png).\n")
         let findings = result.report.findings.map(\.message)
-        #expect(findings.contains("a picture, untitled, which the export does not hold, was kept as its name"))
-        #expect(findings.contains("a picture, gone too.png, which the export does not hold, was kept as its name"))
+        #expect(findings.contains("a picture, untitled, which the export does not hold, was marked in its place"))
+        #expect(findings.contains("a picture, gone too.png, which the export does not hold, was marked in its place"))
     }
 
     @Test("A picture in a folder whose name was unpacked with another encoding is still found by its page's identifier")

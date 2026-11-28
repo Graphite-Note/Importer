@@ -7,8 +7,8 @@
  *              attachments in pieces, assigns the property types and writes the import report.
  *
  * Authors: Bahey Shalash
- * Version: 0.2
- * Date: 27/11/2026
+ * Version: 0.3
+ * Date: 28/11/2026
  */
 
 import ImporterCore
@@ -96,6 +96,9 @@ public enum NotionHTMLImporter {
         }
         export.adoptUnnamedPages(unnamedPages)
         guard !export.pages.isEmpty else { throw NotionImportError.noPages }
+        if !export.duplicatePages.isEmpty {
+            await chooseAmongCopies(in: &export, report: &report)
+        }
         for page in export.pages {
             do {
                 let html = String(decoding: try await page.file.contents(), as: UTF8.self)
@@ -157,7 +160,12 @@ public enum NotionHTMLImporter {
                                         dateParser: dateParser, destination: destination, report: &report,
                                         assignType: { name, type, path, report in assign(name, type, at: path, report: &report) })
                 } else {
-                    let contents = read.frontMatter.yaml + MarkdownWriter.markdown(for: read.blocks)
+                    var blocks = read.blocks
+                    if !read.heldFiles.isEmpty {
+                        blocks = try await writeHeldFiles(read.heldFiles, of: blocks, placement: placement, plan: &plan,
+                                                          destination: destination, report: &report)
+                    }
+                    let contents = read.frontMatter.yaml + MarkdownWriter.markdown(for: blocks)
                     try await destination.writeNewFile(Array(contents.utf8), at: placement.path)
                     report.recordWritten(.note, at: placement.path)
                     for (name, type) in read.propertyTypes { assign(name, type, at: placement.path, report: &report) }
@@ -209,7 +217,14 @@ public enum NotionHTMLImporter {
                                   export: NotionExport, plan: inout NotionVaultPlan, dateParser: NotionDateParser,
                                   destination: any ImportDestination, report: inout ImportReport,
                                   assignType: (String, PropertyType, VaultPath, inout ImportReport) -> Void) async throws {
-        let rowsFolder = placement.childFolder ?? placement.path.parent ?? plan.rootFolder
+        // The rows' folder is the one the table's rows are in, whatever the page's file is called; else the page's.
+        var rowsInFolder: [VaultPath: Int] = [:]
+        for identifier in database.rowPageIdentifiers {
+            if let folder = plan.placement(ofPage: identifier)?.path.parent { rowsInFolder[folder, default: 0] += 1 }
+        }
+        let rowsFolder = rowsInFolder.sorted { left, right in
+            left.value != right.value ? left.value > right.value : left.key.description < right.key.description
+        }.first?.key ?? placement.childFolder ?? placement.path.parent ?? plan.rootFolder
         var displayNames: [(property: String, displayName: String)] = []
         var order = ["file.name"]
         for column in database.columns {
@@ -260,6 +275,50 @@ public enum NotionHTMLImporter {
         }
     }
 
+    /// Writes the files a page holds inside itself beside its note, and gives its blocks with links to them.
+    private static func writeHeldFiles(_ files: [NotionHeldFile], of blocks: [MarkdownBlock], placement: NotionVaultPlan.Placement,
+                                       plan: inout NotionVaultPlan, destination: any ImportDestination,
+                                       report: inout ImportReport) async throws -> [MarkdownBlock] {
+        let folder = placement.childFolder ?? placement.path.parent ?? plan.rootFolder
+        var targets: [String: String] = [:]
+        for file in files {
+            let path = plan.claimAttachment(named: file.name, in: folder)
+            do {
+                try await destination.writeNewFile(file.bytes, at: path)
+                report.recordWritten(.attachment, at: path)
+                targets[file.placeholder] = path.description
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                report.record(.failed, at: placement.path, "\(file.name), held inside the page, could not be written: \(ImportReport.text(describing: error)).")
+                targets[file.placeholder] = file.name
+            }
+        }
+        return MarkdownBlockLinks.replacingTargets(in: blocks, targets)
+    }
+
+    /// Keeps one copy of each page the export holds more than once: the copy the other pages link to (a backup
+    /// folder's copy beside the original is linked by none), and reports each copy left out.
+    private static func chooseAmongCopies(in export: inout NotionExport, report: inout ImportReport) async {
+        var incoming: [String: Int] = [:]
+        for page in export.pages + export.duplicatePages {
+            guard let bytes = try? await page.file.contents() else { continue } // A page that cannot be read links to none.
+            let html = String(decoding: bytes, as: UTF8.self)
+            for target in NotionPageSummary.linkedHTMLPaths(in: html, from: Array(page.file.pathComponents.dropLast()))
+            where target != page.file.path {
+                incoming[target, default: 0] += 1
+            }
+        }
+        let decisions = export.chooseAmongCopies { file in incoming[file.path] ?? 0 }
+        for (kept, leftOut) in decisions {
+            let keptBytes = try? await kept.file.contents() // Unreadable copies are told apart as differing.
+            let leftBytes = try? await leftOut.file.contents() // Unreadable copies are told apart as differing.
+            let difference = keptBytes != nil && keptBytes == leftBytes ? "the same" : "different"
+            report.record(.leftOut, at: nil, "\(leftOut.file.origin) holds the same page as \(kept.file.origin), "
+                + "which the other pages link to and which was imported instead (the two are \(difference))")
+        }
+    }
+
     private static func csvProperty(_ column: String, text: String, notionType: String?,
                                     dateParser: NotionDateParser) -> (String, PropertyValue, PropertyType)? {
         guard !text.isEmpty else { return nil }
@@ -267,8 +326,10 @@ public enum NotionHTMLImporter {
         case "checkbox"?:
             return (column, .checkbox(text.lowercased() == "yes" || text.lowercased() == "true"), .checkbox)
         case "number"?, "auto_increment_id"?:
-            if let number = NotionPropertyReader.number(text) { return (column, .number(number), .number) }
-            return (column, .text(text), .number)
+            if let number = NotionPropertyReader.number(text) ?? NotionPropertyReader.formattedNumber(text)?.number {
+                return (column, .number(number), .number)
+            }
+            return (column, .text(text), .text)
         case "date"?, "created_time"?, "last_edited_time"?:
             if let dates = dateParser.parseRange(text), dates.count == 1 {
                 return (column, .date(dates[0].propertyText), dates[0].time == nil ? .date : .datetime)
@@ -293,6 +354,37 @@ struct NotionPageSummary: Sendable {
     var isDatabase: Bool
     var headingTextByBlock: [String: String]
     var propertyDates: [String]
+    /// Whether the export holds the pages of a database's rows: its table links to files of the export (an export
+    /// whose rows link to notion.so lacks them), or it has no row.
+    var hasRowsInExport: Bool
+
+    /// The export paths of the HTML files `html` links to, from the folder `folder` it is in.
+    static func linkedHTMLPaths(in html: String, from folder: [String]) -> [String] {
+        var paths: [String] = []
+        var searchStart = html.startIndex
+        while let range = html.range(ofText: "href=\"", in: searchStart..<html.endIndex),
+            let end = html[range.upperBound...].firstIndex(of: "\"")
+        {
+            searchStart = end
+            let href = HTMLCharacterReferences.decode(String(html[range.upperBound..<end]))
+            let lowered = href.lowercased()
+            guard !lowered.contains(text: "://"), !lowered.hasPrefix("#"), !lowered.hasPrefix("mailto:") else { continue }
+            let path = href.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false)[0]
+            let decoded = String(path).percentDecoded ?? String(path)
+            guard decoded.lowercased().hasSuffix(".html") else { continue }
+            var components = folder
+            for name in decoded.split(separator: "/", omittingEmptySubsequences: true) {
+                if name == "." { continue }
+                if name == ".." {
+                    if !components.isEmpty { components.removeLast() }
+                    continue
+                }
+                components.append(String(name))
+            }
+            paths.append(components.joined(separator: "/"))
+        }
+        return paths
+    }
 
     /// The identifier of the page an HTML file holds, from its `article` element, `nil` when it holds no Notion page.
     static func pageIdentifier(in html: String) -> String? {
@@ -308,6 +400,18 @@ struct NotionPageSummary: Sendable {
         } ?? ""
         self.title = title.isEmpty ? titleFromName : title
         isDatabase = html.contains(text: "<div class=\"page-body\"><table class=\"collection-content\">")
+        var rowCount = 0
+        var rowsInExport = 0
+        var rowSearch = html.startIndex
+        while isDatabase, let cell = html.range(ofText: "<td class=\"cell-title\">", in: rowSearch..<html.endIndex) {
+            rowSearch = cell.upperBound
+            rowCount += 1
+            let rest = html[cell.upperBound...].prefix(400)
+            if let link = rest.range(ofText: "<a href=\""), !rest[link.upperBound...].lowercased().hasPrefix("http") {
+                rowsInExport += 1
+            }
+        }
+        hasRowsInExport = rowCount == 0 || rowsInExport > 0
         var headings: [String: String] = [:]
         for level in 1...3 {
             var searchStart = html.startIndex

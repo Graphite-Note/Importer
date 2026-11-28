@@ -8,8 +8,8 @@
  *              which is refused.
  *
  * Authors: Bahey Shalash
- * Version: 0.2
- * Date: 27/11/2026
+ * Version: 0.3
+ * Date: 28/11/2026
  */
 
 import Foundation
@@ -41,7 +41,8 @@ struct NotionFixtureImportTests {
         let result = try await importFixture("notion-testspace.zip", into: vault)
         #expect(result.report.writtenCount(of: .note) == 4)
         #expect(result.report.writtenCount(of: .attachment) == 5)
-        #expect(result.report.findings.isEmpty)
+        // The one finding: a paragraph's background color, which Markdown cannot give a block.
+        #expect(result.report.findings.map(\.message) == ["the color of a block was dropped: Markdown gives a block no color"])
         #expect(result.reportPath.description == "Notion/Notion import report.md")
 
         let notes = vault.filePaths().filter { $0.hasSuffix(".md") }
@@ -99,8 +100,11 @@ struct NotionFixtureImportTests {
                                          dateParser: NotionDateParser(defaultYear: 2024))
         let produced = page.frontMatter.yaml + MarkdownWriter.markdown(for: page.blocks)
         let upstream = try String(contentsOf: notionFixtures.appendingPathComponent("expected/database-row.md"), encoding: .utf8)
-        // Upstream's note ends without a line end, which the note written here has.
-        #expect(produced == upstream + "\n")
+        // Upstream's note ends without a line end, which the note written here has. Its two formatted numbers are
+        // numbers here (Differences.md, database-row.md).
+        let expected = upstream.replacingOccurrences(of: "Price (USD): $1,234.56", with: "Price (USD): 1234.56")
+            .replacingOccurrences(of: "Discount: 15%", with: "Discount: 0.15")
+        #expect(produced == expected + "\n")
         #expect(page.title == "Espresso machine")
         let types = Dictionary(uniqueKeysWithValues: page.propertyTypes.map { ($0.name, $0.type) })
         #expect(types["Price"] == .number)

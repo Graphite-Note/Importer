@@ -7,8 +7,8 @@
  *              identifier whatever the names Notion shortened.
  *
  * Authors: Bahey Shalash
- * Version: 0.2
- * Date: 27/11/2026
+ * Version: 0.3
+ * Date: 28/11/2026
  */
 
 import ImporterCore
@@ -34,6 +34,9 @@ struct NotionExport: Sendable {
     var csvFiles: [String: ExportFile]
     /// Every folder of the export, by its path.
     var folders: Set<[String]>
+    /// Pages whose identifier an earlier file of the export already has: copies of a page (a backup folder beside the
+    /// original), one of which is imported (`chooseAmongCopies`).
+    var duplicatePages: [Page] = []
 
     /// The export of `tree`. The folder Notion puts everything in (`Export-<identifier>`) is left out of the paths, so
     /// that the parts of a large export, each with that folder, add up to one tree.
@@ -71,8 +74,13 @@ struct NotionExport: Sendable {
             }
             switch name?.pathExtension {
             case "html"?:
-                if let name, seenPages.insert(name.pageIdentifier).inserted {
-                    pages.append(Page(identifier: name.pageIdentifier, file: file, titleFromName: name.title))
+                if let name {
+                    let page = Page(identifier: name.pageIdentifier, file: file, titleFromName: name.title)
+                    if seenPages.insert(name.pageIdentifier).inserted {
+                        pages.append(page)
+                    } else {
+                        duplicatePages.append(page)
+                    }
                 }
             case "csv"?:
                 if let name, name.isAllRowsTable || csvFiles[name.pageIdentifier] == nil {
@@ -99,8 +107,13 @@ struct NotionExport: Sendable {
     mutating func adoptUnnamedPages(_ found: [(file: ExportFile, identifier: String)]) {
         var seen = Set(pages.map({ $0.identifier }))
         var adopted: Set<String> = []
-        for (file, identifier) in found where seen.insert(identifier).inserted {
-            pages.append(Page(identifier: identifier, file: file, titleFromName: String(file.name.dropLast(".html".count))))
+        for (file, identifier) in found {
+            let page = Page(identifier: identifier, file: file, titleFromName: String(file.name.dropLast(".html".count)))
+            if seen.insert(identifier).inserted {
+                pages.append(page)
+            } else {
+                duplicatePages.append(page)
+            }
             adopted.insert(file.path)
         }
         for file in unnamedHTMLFiles where !adopted.contains(file.path) && file.pathComponents != ["index.html"] {
@@ -108,6 +121,27 @@ struct NotionExport: Sendable {
         }
         unnamedHTMLFiles = []
         sortPages()
+    }
+
+    /// Keeps, of each page the export holds more than once, the copy that `score` rates highest (the one the other
+    /// pages link to), the first in the export's order on a tie, and gives each copy left out with the one kept.
+    mutating func chooseAmongCopies(score: (ExportFile) -> Int) -> [(kept: Page, leftOut: Page)] {
+        guard !duplicatePages.isEmpty else { return [] }
+        var copies: [String: [Page]] = [:]
+        for page in duplicatePages { copies[page.identifier, default: []].append(page) }
+        var decisions: [(kept: Page, leftOut: Page)] = []
+        for (index, page) in pages.enumerated() {
+            guard let others = copies[page.identifier] else { continue }
+            var kept = page
+            for other in others where score(other.file) > score(kept.file) { kept = other }
+            pages[index] = kept
+            for candidate in [page] + others where candidate.file.path != kept.file.path {
+                decisions.append((kept, candidate))
+            }
+        }
+        duplicatePages = []
+        sortPages()
+        return decisions
     }
 
     private mutating func sortPages() {
@@ -174,7 +208,9 @@ struct NotionVaultPlan: NotionLinkResolving, Sendable {
                 let title = summary?.title ?? page.titleFromName
                 let childName = String(page.file.name.dropLast(".html".count))
                 let hasChildren = export.folders.contains(exportFolder + [childName])
-                let pathExtension = summary?.isDatabase == true ? "base" : "md"
+                // A database becomes a base over its rows, when the export holds them; else a note with its table.
+                let isBase = summary?.isDatabase == true && (summary?.hasRowsInExport == true || export.csvFiles[page.identifier] != nil)
+                let pathExtension = isBase ? "base" : "md"
                 let stem = names.claimStem(VaultFileName.stem(forTitle: title),
                                            withEachOf: hasChildren ? [pathExtension, nil] : [pathExtension])
                 guard let path = vaultFolder.appending("\(stem).\(pathExtension)") else { continue }
@@ -291,6 +327,15 @@ struct NotionVaultPlan: NotionLinkResolving, Sendable {
         let stem = names.claimStem(VaultFileName.stem(forTitle: name), withEachOf: ["md"])
         folderNames[rootFolder] = names
         return stem
+    }
+
+    /// Takes a name for the attachment `name` in `folder`, for files the plan did not place (held inside a page).
+    mutating func claimAttachment(named name: String, in folder: VaultPath) -> VaultPath {
+        var names = folderNames[folder] ?? VaultFolderNames()
+        let (stem, pathExtension) = NotionVaultPlan.attachmentName(name)
+        let claimed = names.claim(stem: stem, pathExtension: pathExtension)
+        folderNames[folder] = names
+        return folder.appending(claimed) ?? folder
     }
 
     /// Takes a note's name for `title` in `folder`, for notes the plan did not place (rows made from a CSV).

@@ -3,11 +3,11 @@
  * -----------------------------------
  * Layer: File system
  * Description: An import destination that is a folder on disk, written with plain file operations, for tests, tools
- *              and hosts that need no coordination of their writes.
+ *              and hosts that need no coordination of their writes, its files named as the vault paths spell them.
  *
  * Authors: Bahey Shalash
- * Version: 0.4
- * Date: 27/11/2026
+ * Version: 0.5
+ * Date: 28/11/2026
  */
 
 import Foundation
@@ -25,6 +25,7 @@ public struct FolderImportDestination: ImportDestination {
         self.vaultFolder = vaultFolder
     }
 
+    #if os(WASI)
     public func createFolder(at path: VaultPath) async throws {
         try FileManager.default.createDirectory(at: url(of: path), withIntermediateDirectories: true)
     }
@@ -43,14 +44,47 @@ public struct FolderImportDestination: ImportDestination {
             throw ImportDestinationError.fileAlreadyExists(path)
         }
         try Data().write(to: fileURL, options: .withoutOverwriting)
-        return try FolderImportFileWriter(url: fileURL)
+        return FolderImportFileWriter(handle: try FileHandle(forWritingTo: fileURL))
     }
+    #else
+    // Files and folders are made through their paths as strings: Foundation's file URLs hand Apple's systems names
+    // decomposed (`Café` as `Cafe` and a combining accent), which other systems, sync and links take for other names.
+    public func createFolder(at path: VaultPath) async throws {
+        try FileManager.default.createDirectory(at: vaultFolder, withIntermediateDirectories: true)
+        var current = vaultFolder.path
+        for name in path.components {
+            current += "/" + name
+            if mkdir(current, 0o755) != 0, errno != EEXIST { throw FolderImportDestinationError.systemCall("mkdir", errno, path) }
+        }
+    }
+
+    public func writeNewFile(_ contents: [UInt8], at path: VaultPath) async throws {
+        let handle = try createFile(at: path)
+        try handle.write(contentsOf: contents)
+        try handle.close()
+    }
+
+    public func createNewFile(at path: VaultPath) async throws -> any ImportFileWriting {
+        FolderImportFileWriter(handle: try createFile(at: path))
+    }
+
+    /// The file `path`, made empty and open for writing, never one already there.
+    private func createFile(at path: VaultPath) throws -> FileHandle {
+        let descriptor = open(filePath(of: path), O_WRONLY | O_CREAT | O_EXCL, 0o644)
+        guard descriptor >= 0 else {
+            if errno == EEXIST { throw ImportDestinationError.fileAlreadyExists(path) }
+            throw FolderImportDestinationError.systemCall("open", errno, path)
+        }
+        return FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+    }
+    #endif
 
     public func names(inFolderAt path: VaultPath) async throws -> [String] {
         let folderURL = url(of: path)
         // A missing folder, or a file in its place, has no names in it.
         guard (try? folderURL.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true else { return [] }
-        return try FileManager.default.contentsOfDirectory(atPath: folderURL.path)
+        // Composed, as vault paths are, whichever way the files were named.
+        return try FileManager.default.contentsOfDirectory(atPath: folderURL.path).map { $0.precomposedStringWithCanonicalMapping }
     }
 
     public func assignPropertyTypes(_ types: [String: PropertyType]) async throws -> [String] {
@@ -92,6 +126,23 @@ public struct FolderImportDestination: ImportDestination {
     fileprivate func url(of path: VaultPath) -> URL {
         path.components.reduce(vaultFolder) { folder, name in folder.appendingPathComponent(name) }
     }
+
+    /// The path of `path` as a string, its names as the vault path spells them.
+    fileprivate func filePath(of path: VaultPath) -> String {
+        ([vaultFolder.path] + path.components).joined(separator: "/")
+    }
+}
+
+/// A file operation of a folder destination the system refused.
+public enum FolderImportDestinationError: Error, Equatable, CustomStringConvertible {
+    case systemCall(String, Int32, VaultPath)
+
+    public var description: String {
+        switch self {
+        case .systemCall(let call, let code, let path):
+            return "\(path) could not be written (\(call) failed with error \(code))"
+        }
+    }
 }
 
 /// A folder updated by a later import: nothing else writes it meanwhile, so a replacement checks the file just before.
@@ -104,7 +155,28 @@ extension FolderImportDestination: UpdatingImportDestination {
 
     public func replaceFile(at path: VaultPath, expecting expected: [UInt8], with contents: [UInt8]) async throws {
         guard try await readFile(at: path) == expected else { throw ImportUpdateError.changedSinceRead(path) }
-        try Data(contents).write(to: url(of: path), options: .atomic)
+        #if os(WASI)
+        try Data(contents).write(to: url(of: path))
+        #else
+        // Written beside it, then renamed over it, under the name the vault path spells.
+        let target = filePath(of: path)
+        let temporary = target + ".importer-\(UInt64.random(in: 0...UInt64.max))"
+        let descriptor = open(temporary, O_WRONLY | O_CREAT | O_EXCL, 0o644)
+        guard descriptor >= 0 else { throw FolderImportDestinationError.systemCall("open", errno, path) }
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        do {
+            try handle.write(contentsOf: contents)
+            try handle.close()
+        } catch {
+            unlink(temporary)
+            throw error
+        }
+        if rename(temporary, target) != 0 {
+            let code = errno
+            unlink(temporary)
+            throw FolderImportDestinationError.systemCall("rename", code, path)
+        }
+        #endif
     }
 
     public func filePaths(inFolderAt path: VaultPath) async throws -> [VaultPath] {
@@ -127,8 +199,8 @@ extension FolderImportDestination: UpdatingImportDestination {
 actor FolderImportFileWriter: ImportFileWriting {
     private let handle: FileHandle
 
-    init(url: URL) throws {
-        handle = try FileHandle(forWritingTo: url)
+    init(handle: FileHandle) {
+        self.handle = handle
     }
 
     func append(_ bytes: [UInt8]) throws {

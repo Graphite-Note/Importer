@@ -7,8 +7,8 @@ Description: How the Importer is built: its layers, what the host provides, how 
              Importer.
 
 Authors: Bahey Shalash
-Version: 0.7
-Date: 27/11/2026
+Version: 0.8
+Date: 28/11/2026
 -->
 
 # Design
@@ -62,10 +62,15 @@ The import reads every page twice. The first pass keeps each page's whole title 
 
 - Pages become notes, their icon as the `icon` property and their cover as `banner` (a link to the copied picture, or its web address), their description as the first paragraph. `banner` is the property Graphite draws a cover from, and the one the Banners and Pixel Banner plugins read in Obsidian. Obsidian's Importer writes `cover`, which neither draws.
 - Blocks: headings, paragraphs, lists, to-dos, quotes, code with its language in the highlighter's name, equations as `$…$` and `$$…$$`, simple tables, dividers, images and files (embedded when in the export), bookmarks and embeds as links, links to pages as wiki links, the table of contents nested by level. Callouts keep their emoji in the title, their type taken from the icon (`[!tip]` for a light bulb, `[!warning]` for a warning sign, `[!info]` for Notion's info icon, `[!note]` otherwise). Toggles become folded callouts. Toggle headings stay headings: headings fold in Obsidian and Graphite, and the links to them keep working. Columns are flattened, one after the other, and reported. Synced blocks reach the HTML export as ordinary blocks, so they are copied without a mark to report.
-- Background colors become highlights, as do text colors other than gray. Notion's line break before a change of style, right after a line break, is dropped.
-- A database's page becomes a base: a table view of the columns its page shows, over the folder of its rows (`file.folder`). Each row is a note whose properties are typed from Notion's `property-row-*` classes: text, number, check box, date or date and time, lists, links to pages (relations) and attachments (files), `Tags` as tags. The types join the vault's `.obsidian/types.json` through the destination, which keeps every type already there and says which. A row the database's CSV holds without a page in the export becomes a note of its properties. An inline database is embedded where the page had it (`![[Tasks.base]]`).
+- Background colors become highlights, as do text colors other than gray, and a heading's color highlights its text. Other blocks' colors are dropped and counted in the report. Notion's line break before a change of style, right after a line break, is dropped. A date mention is its date, without Notion's `@`.
+- Text is written so that it reads as Notion shows it. Spaces at the edges of a style or a link's label go outside it, so that the words beside it stay apart. Punctuation at a style's edge goes outside it where a letter touches the delimiter, and a style holding only punctuation or spaces is its text, as CommonMark (and Obsidian) would otherwise show the asterisks. A link's label escapes its own brackets (`[\[3\]](…)`, not a wiki link). A bare address is written bare only where an autolink reads it whole, else between `<` and `>`. `$` is escaped only on a line where two could pair into math, `#` only where it starts a tag (after a space, not inside an address). A rule opening a note is `***`, as `---` there would open its properties. A list item without text keeps its place, its marker alone.
+- A picture or file held inside the page (a `data:` address) is written beside the note and embedded. A picture the export lacks is marked in its place, `_(picture not in the export: name)_`, and reported. A wiki link's text keeps no style, and losing a code style there is reported.
+- A database's page becomes a base: a table view of the columns its page shows, over the folder its rows are in (`file.folder`), whatever the page's file is called. A database whose rows the export lacks (they link to notion.so) is a note with its table as a Markdown table, reported. Each row is a note whose properties are typed from Notion's `property-row-*` classes: text, number, check box, date or date and time, lists, links to pages (relations) and attachments (files), `Tags` as tags. The types join the vault's `.obsidian/types.json` through the destination, which keeps every type already there and says which. A row the database's CSV holds without a page in the export becomes a note of its properties. An inline database is embedded where the page had it (`![[Tasks.base]]`).
 - Attachments are copied next to the pages that hold them, piece by piece, their names decoded when Notion left percent escapes in them.
 - A Markdown export is refused with a message saying to export again as HTML.
+- A page the export holds twice (a backup folder beside the original) is imported once: the copy the other pages link to, the other copies reported.
+- A number Notion shows formatted is a number: `15%` as 0.15 (Notion keeps the fraction), `£42,000.00` as 42000, with the format reported. One that cannot be read is text, typed as text.
+- Files are named as the vault paths spell them, composed (`Café`), where Foundation's file addresses would decompose them on Apple's systems.
 
 The import report lists every note, base and attachment written, and what was simplified, left out (with the entries refused because their path or link could reach outside the export) or failed, with a link to each note.
 

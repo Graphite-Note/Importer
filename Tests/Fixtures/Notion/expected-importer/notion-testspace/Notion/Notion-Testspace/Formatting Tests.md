@@ -70,7 +70,7 @@ A further-indented text block, equal to a single new paragraph.
 >
 > This paragraph of the callout…
 >
-> has a _**double**_ _**linebreak**_ here.
+> has a _**double linebreak**_ here.
 
 > [!info] _**A Formatted Callout Title**_
 > The formatting should work as normal within the title.

@@ -6,8 +6,8 @@
  *              front matter and base YAML, and CSV tables.
  *
  * Authors: Bahey Shalash
- * Version: 0.1
- * Date: 26/11/2026
+ * Version: 0.2
+ * Date: 28/11/2026
  */
 
 import Foundation
@@ -23,7 +23,10 @@ struct MarkdownWriterTests {
     @Test("Text that Markdown or Obsidian would read as syntax is escaped")
     func escaping() {
         let text = write([.paragraph([.text("a*b $5 #tag #123 snake_case _x [[no]] <div> ==no== %%no%% ~~no~~ C:\\path")])])
-        #expect(text == "a\\*b \\$5 \\#tag #123 snake_case \\_x \\[[no\\]] \\<div> \\==no\\== \\%%no\\%% \\~~no\\~~ C:\\path\n")
+        #expect(text == "a\\*b $5 \\#tag #123 snake_case \\_x \\[[no\\]] \\<div> \\==no\\== \\%%no\\%% \\~~no\\~~ C:\\path\n")
+        // `$` is escaped where two could pair into math, and kept as written where they cannot.
+        #expect(write([.paragraph([.text("$5 and $x$")])]) == "\\$5 and \\$x\\$\n")
+        #expect(write([.paragraph([.text("costs $5 and $10")])]) == "costs $5 and $10\n")
         #expect(write([.paragraph([.text("# not a heading")])]) == "\\# not a heading\n")
         #expect(write([.paragraph([.text("1. not a list")])]) == "1\\. not a list\n")
         #expect(write([.paragraph([.text("- not a list")])]) == "\\- not a list\n")

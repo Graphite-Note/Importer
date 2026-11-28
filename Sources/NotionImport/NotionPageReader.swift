@@ -8,8 +8,8 @@
  *              link resolved by page identifier.
  *
  * Authors: Bahey Shalash
- * Version: 0.2
- * Date: 27/11/2026
+ * Version: 0.3
+ * Date: 28/11/2026
  */
 
 import ImporterCore
@@ -85,6 +85,77 @@ public struct NotionPage: Sendable {
     public var database: NotionDatabaseTable?
     /// What was simplified or left out while reading.
     public var findings: [NotionPageFinding]
+    /// The files the page holds inside itself (`data:` addresses), for the importer to write beside the note. Its
+    /// blocks link to each by the file's `placeholder` until then.
+    public var heldFiles: [NotionHeldFile] = []
+}
+
+/// A file a page holds inside itself, as a `data:` address: a picture pasted into Notion, written out as an attachment.
+public struct NotionHeldFile: Equatable, Sendable {
+    /// The wiki link target the page's blocks use for the file until the importer has placed it.
+    public var placeholder: String
+    /// The file's name: `Picture 1.png`, or `File 1.pdf` for a file that is no picture.
+    public var name: String
+    public var bytes: [UInt8]
+
+    /// What every placeholder starts with.
+    public static let placeholderPrefix = "notion-held-file:"
+
+    /// The type and bytes of a `data:` address (`data:image/png;base64,iVBOR…`), `nil` when it holds nothing readable.
+    static func decode(dataAddress address: String) -> (mediaType: String, bytes: [UInt8])? {
+        guard address.lowercased().hasPrefix("data:"), let comma = address.firstIndex(of: ",") else { return nil }
+        let header = address[address.index(address.startIndex, offsetBy: 5)..<comma].lowercased()
+        let payload = String(address[address.index(after: comma)...])
+        let mediaType = header.split(separator: ";").first.map { String($0).trimmingSpaces() } ?? ""
+        let bytes: [UInt8]?
+        if header.hasSuffix(";base64") {
+            bytes = base64Decoded(payload)
+        } else {
+            bytes = (payload.percentDecoded ?? payload).utf8.map { $0 }
+        }
+        guard let bytes, !bytes.isEmpty else { return nil }
+        return (mediaType.isEmpty ? "text/plain" : mediaType, bytes)
+    }
+
+    /// The extension a file of `mediaType` is named with.
+    static func pathExtension(ofMediaType mediaType: String) -> String {
+        let known: [String: String] = [
+            "image/png": "png", "image/jpeg": "jpg", "image/jpg": "jpg", "image/gif": "gif", "image/webp": "webp",
+            "image/svg+xml": "svg", "image/bmp": "bmp", "image/avif": "avif", "image/heic": "heic",
+            "application/pdf": "pdf", "text/plain": "txt", "text/html": "html", "text/csv": "csv",
+            "audio/mpeg": "mp3", "audio/wav": "wav", "video/mp4": "mp4", "video/webm": "webm",
+        ]
+        if let known = known[mediaType] { return known }
+        let subtype = mediaType.split(separator: "/").last.map(String.init) ?? ""
+        return !subtype.isEmpty && subtype.count <= 5 && subtype.allSatisfy({ $0.isLetter || $0.isNumber }) ? subtype : "bin"
+    }
+
+    /// The bytes of base64 text, the URL-safe alphabet and spaces allowed, `nil` for text that is not base64.
+    static func base64Decoded(_ text: String) -> [UInt8]? {
+        var bytes: [UInt8] = []
+        var buffer: UInt32 = 0
+        var bitCount = 0
+        for unit in text.utf8 {
+            let value: UInt32
+            switch unit {
+            case UInt8(ascii: "A")...UInt8(ascii: "Z"): value = UInt32(unit - UInt8(ascii: "A"))
+            case UInt8(ascii: "a")...UInt8(ascii: "z"): value = UInt32(unit - UInt8(ascii: "a")) + 26
+            case UInt8(ascii: "0")...UInt8(ascii: "9"): value = UInt32(unit - UInt8(ascii: "0")) + 52
+            case UInt8(ascii: "+"), UInt8(ascii: "-"): value = 62
+            case UInt8(ascii: "/"), UInt8(ascii: "_"): value = 63
+            case UInt8(ascii: "="): return bytes
+            case UInt8(ascii: " "), UInt8(ascii: "\n"), UInt8(ascii: "\r"), UInt8(ascii: "\t"): continue
+            default: return nil
+            }
+            buffer = (buffer << 6) | value
+            bitCount += 6
+            if bitCount >= 8 {
+                bitCount -= 8
+                bytes.append(UInt8((buffer >> UInt32(bitCount)) & 0xFF))
+            }
+        }
+        return bytes
+    }
 }
 
 /// Reads one page's HTML.
@@ -97,6 +168,8 @@ public struct NotionPageReader {
     private var pageIdentifier: String?
     private var headingTextByBlock: [String: String] = [:]
     private var flattenedColumnLayoutCount = 0
+    private var droppedBlockColorCount = 0
+    private var heldFiles: [NotionHeldFile] = []
 
     /// Reads `html`, the page found at `exportPath` in the export.
     public static func read(html: String, exportPath: [String], resolver: any NotionLinkResolving,
@@ -165,7 +238,13 @@ public struct NotionPageReader {
         }
         var database: NotionDatabaseTable?
         if let body {
-            if let table = body.elementChildren.first, table.tagName == "table", table.hasClass("collection-content") {
+            if let table = body.elementChildren.first, table.tagName == "table", table.hasClass("collection-content"),
+                let pageIdentifier, let own = resolver.target(ofPage: pageIdentifier), !own.isBase
+            {
+                note(.simplified, "the export holds none of the database's rows, so its table was written as a Markdown table")
+                blocks.append(databaseTable(table))
+                blocks.append(contentsOf: self.blocks(of: Array(body.elementChildren.dropFirst())))
+            } else if let table = body.elementChildren.first, table.tagName == "table", table.hasClass("collection-content") {
                 database = readDatabaseTable(table)
                 blocks.append(contentsOf: self.blocks(of: Array(body.elementChildren.dropFirst())))
             } else {
@@ -177,8 +256,13 @@ public struct NotionPageReader {
                 ? "a layout in columns was flattened into one column, the columns one after the other"
                 : "\(flattenedColumnLayoutCount) layouts in columns were flattened into one column, the columns one after the other")
         }
+        if droppedBlockColorCount > 0 {
+            note(.simplified, droppedBlockColorCount == 1
+                ? "the color of a block was dropped: Markdown gives a block no color"
+                : "the colors of \(droppedBlockColorCount) blocks were dropped: Markdown gives a block no color")
+        }
         return NotionPage(identifier: pageIdentifier, title: title, frontMatter: frontMatter, propertyTypes: propertyTypes,
-                          blocks: blocks, database: database, findings: findings)
+                          blocks: blocks, database: database, findings: findings, heldFiles: heldFiles)
     }
 
     private mutating func note(_ severity: ImportReport.Severity, _ message: String) {
@@ -255,23 +339,37 @@ public struct NotionPageReader {
 
     private mutating func blocks(ofElement element: HTMLNode) -> [MarkdownBlock] {
         let tag = element.tagName ?? ""
+        let blockColor = element.classes.first(where: { $0.hasPrefix("block-color-") })
+            .map { String($0.dropFirst("block-color-".count)) }
+            .flatMap { $0 == "default" || $0 == "default_background" ? nil : $0 }
         switch tag {
         case "p", "section", "article", "header", "li":
+            if blockColor != nil { droppedBlockColorCount += 1 }
             return blocks(of: element.children)
         case "h1", "h2", "h3", "h4", "h5", "h6":
             let level = Int(String(tag.dropFirst())) ?? 1
-            return [.heading(level: level, inlines(of: element.children))]
+            let text = inlines(of: element.children)
+            // A heading's color, most often a background, becomes a highlight of its text, as a colored text does.
+            if let blockColor, blockColor != "gray", !MarkdownInlineNormalizer.isBlank(text) {
+                return [.heading(level: level, [.highlight(text)])]
+            }
+            if blockColor != nil { droppedBlockColorCount += 1 }
+            return [.heading(level: level, text)]
         case "ul" where element.hasClass("toggle"):
             return element.elementChildren.flatMap { item in blocks(of: item.children) }
         case "ul":
+            if blockColor != nil { droppedBlockColorCount += 1 }
             return [.bulletList(listItems(of: element))]
         case "ol":
+            if blockColor != nil { droppedBlockColorCount += 1 }
             let start = Int(element.attributes["start"] ?? "") ?? 1
             return [.numberedList(start: start, listItems(of: element))]
         case "blockquote":
+            if blockColor != nil { droppedBlockColorCount += 1 }
             let content = blocks(of: element.children)
             return content.isEmpty ? [] : [.quote(content)]
         case "figure":
+            if blockColor != nil { droppedBlockColorCount += 1 }
             return blocks(ofFigure: element)
         case "pre":
             return [codeBlock(of: element)]
@@ -359,7 +457,7 @@ public struct NotionPageReader {
         } else if figure.hasClass("link-to-page") {
             result = linkToPage(figure)
         } else if let bookmark = figure.firstDescendant(where: { $0.tagName == "a" && $0.hasClass("bookmark") }) {
-            result = [self.bookmark(bookmark)]
+            result = self.bookmark(bookmark).map { [$0] } ?? []
         } else if figure.hasClass("image") || figure.firstDescendant(where: { $0.tagName == "img" }) != nil
             && figure.firstDescendant(where: { $0.hasClass("source") }) == nil
         {
@@ -427,10 +525,19 @@ public struct NotionPageReader {
         }
     }
 
-    private mutating func bookmark(_ bookmark: HTMLNode) -> MarkdownBlock {
-        let href = bookmark.attributes["href"] ?? ""
+    /// A bookmark as a link to its address with its title, and the first sentence of its description. One without an
+    /// address is its title, and one with neither is left out and reported.
+    private mutating func bookmark(_ bookmark: HTMLNode) -> MarkdownBlock? {
+        let href = (bookmark.attributes["href"] ?? "").trimmingSpaces()
         let title = bookmark.firstDescendant(where: { $0.hasClass("bookmark-title") })?.textContent
             .trimmingSpacesAndLineBreaks() ?? ""
+        guard !href.isEmpty else {
+            if title.isEmpty {
+                note(.leftOut, "an empty bookmark, with no address, was left out")
+                return nil
+            }
+            return .paragraph([.text(title)])
+        }
         let description = bookmark.firstDescendant(where: { $0.hasClass("bookmark-description") })?.textContent ?? ""
         var inlines: [MarkdownInline] = [.link(destination: href, label: [.text(title.isEmpty ? href : title)])]
         let sentence = NotionPageReader.firstSentence(of: description)
@@ -441,13 +548,19 @@ public struct NotionPageReader {
         return .paragraph(inlines)
     }
 
-    private static func firstSentence(of text: String) -> String {
-        let trimmed = text.trimmingSpacesAndLineBreaks()
+    /// The text up to the first end of a sentence: a `.`, `?` or `!` followed by a space or the end, so that a dot
+    /// inside an address or a number does not end it.
+    static func firstSentence(of text: String) -> String {
+        let characters = Array(text.trimmingSpacesAndLineBreaks())
         var sentence = ""
-        for character in trimmed {
+        for (index, character) in characters.enumerated() {
             if character.isNewline { break }
             sentence.append(character)
-            if character == "." || character == "?" || character == "!" { break }
+            if character == "." || character == "?" || character == "!",
+                index + 1 == characters.count || characters[index + 1].isWhitespace
+            {
+                break
+            }
         }
         return sentence
     }
@@ -457,23 +570,41 @@ public struct NotionPageReader {
             return []
         }
         let link = figure.firstDescendant(where: { $0.tagName == "a" })?.attributes["href"]
-        if let target = attachmentTarget(forHref: source) ?? link.flatMap({ attachmentTarget(forHref: $0) }) {
+        if let target = holdFile(source) ?? attachmentTarget(forHref: source) ?? link.flatMap({ attachmentTarget(forHref: $0) }) {
             return [.paragraph([.wikiLink(target: target, label: nil, isEmbed: true)])]
         }
-        if let name = missingPicture(source) { return [.paragraph([.text(name)])] }
+        if let mark = missingPicture(source) { return [.paragraph([mark])] }
         return [.paragraph([.image(source: source, alternativeText: image.attributes["alt"] ?? "")])]
     }
 
-    /// The name of a picture the page shows from a file of the export that the export does not hold, with a finding.
-    /// An embed of it would show nothing, and a Markdown image pointing at it would be a link to nothing, so its name is
-    /// kept as text. A picture from the web or held inside the page is not missing: `nil`.
-    private mutating func missingPicture(_ source: String) -> String? {
+    /// What stands for a picture the page shows from a file of the export that the export does not hold, with a
+    /// finding: an embed of it would show nothing, and a Markdown image pointing at it would be a link to nothing, so
+    /// an italic mark with its name takes its place, which does not read as the page's own text. A picture from the web
+    /// or held inside the page is not missing: `nil`.
+    private mutating func missingPicture(_ source: String) -> MarkdownInline? {
         guard !source.lowercased().hasPrefix("data:"), case .unresolved(let name) = resolve(href: source) else { return nil }
-        note(.leftOut, "a picture, \(name), which the export does not hold, was kept as its name")
-        return name
+        note(.leftOut, "a picture, \(name), which the export does not hold, was marked in its place")
+        return .emphasis([.text("(picture not in the export: \(name))")])
+    }
+
+    /// The wiki link target standing for a file the page holds inside itself (`href` a `data:` address), which the
+    /// importer writes beside the note; `nil` for any other address.
+    private mutating func holdFile(_ href: String) -> String? {
+        guard href.lowercased().hasPrefix("data:") else { return nil }
+        guard let (mediaType, bytes) = NotionHeldFile.decode(dataAddress: href) else {
+            note(.leftOut, "a file held inside the page could not be read, so it was left out")
+            return nil
+        }
+        let number = heldFiles.count + 1
+        let stem = mediaType.hasPrefix("image/") ? "Picture" : "File"
+        let file = NotionHeldFile(placeholder: NotionHeldFile.placeholderPrefix + String(number),
+                                  name: "\(stem) \(number).\(NotionHeldFile.pathExtension(ofMediaType: mediaType))", bytes: bytes)
+        heldFiles.append(file)
+        return file.placeholder
     }
 
     private mutating func embedOrLink(_ href: String) -> MarkdownBlock {
+        if let target = holdFile(href) { return .paragraph([.wikiLink(target: target, label: nil, isEmbed: true)]) }
         switch resolve(href: href) {
         case .attachment(let target):
             return .paragraph([.wikiLink(target: target, label: nil, isEmbed: true)])
@@ -535,12 +666,17 @@ public struct NotionPageReader {
         note(.simplified, "the database \(name.isEmpty ? "without a title" : "“\(name)”") is not in the export, so its table was written as a Markdown table")
         var result: [MarkdownBlock] = []
         if !name.isEmpty { result.append(.paragraph([.strong([.text(name)])])) }
+        result.append(databaseTable(table))
+        return result
+    }
+
+    /// A database's table as a Markdown table: its columns and the text of each cell.
+    private mutating func databaseTable(_ table: HTMLNode) -> MarkdownBlock {
         let headerCells = table.descendants(where: { $0.tagName == "th" }).map { [MarkdownInline.text(textWithoutIcons($0).trimmingSpacesAndLineBreaks())] }
         let rows = table.descendants(where: { $0.tagName == "tr" && $0.parent?.tagName == "tbody" }).map { row in
             row.elementChildren.filter { $0.tagName == "td" }.map { cell in databaseCell(cell) }
         }
-        result.append(.table(header: headerCells, rows: rows))
-        return result
+        return .table(header: headerCells, rows: rows)
     }
 
     private mutating func databaseCell(_ cell: HTMLNode) -> [MarkdownInline] {
@@ -672,10 +808,10 @@ public struct NotionPageReader {
             case "img":
                 if node.hasClass("icon") { continue }
                 if let source = node.attributes["src"] {
-                    if let target = attachmentTarget(forHref: source) {
+                    if let target = holdFile(source) ?? attachmentTarget(forHref: source) {
                         result.append(.wikiLink(target: target, label: nil, isEmbed: true))
-                    } else if let name = missingPicture(source) {
-                        result.append(.text(name))
+                    } else if let mark = missingPicture(source) {
+                        result.append(mark)
                     } else {
                         result.append(.image(source: source, alternativeText: node.attributes["alt"] ?? ""))
                     }
@@ -728,7 +864,17 @@ public struct NotionPageReader {
         let label = inlines(of: anchor.children)
         let labelText = MarkdownInlineNormalizer.plainText(of: label).trimmingSpacesAndLineBreaks()
         guard let href = anchor.attributes["href"], !href.isEmpty else { return label }
-        switch resolve(href: href) {
+        if let target = holdFile(href) { return [.wikiLink(target: target, label: labelText, isEmbed: false)] }
+        let resolution = resolve(href: href)
+        switch resolution {
+        case .page, .attachment, .heading:
+            if NotionPageReader.holdsCode(label) {
+                note(.simplified, "the code style of a link's text was dropped: the text of a wiki link holds no style")
+            }
+        default:
+            break
+        }
+        switch resolution {
         case .page(let target, var heading):
             // A link whose text is a Notion address shows the page's name instead, and the heading the address points
             // at, which Notion leaves out of the link itself.
@@ -747,6 +893,18 @@ public struct NotionPageReader {
         case .unresolved:
             note(.leftOut, "a link to a page or file the export does not hold (\(labelText)) was kept as text")
             return label
+        }
+    }
+
+    private static func holdsCode(_ inlines: [MarkdownInline]) -> Bool {
+        inlines.contains { inline in
+            switch inline {
+            case .code: return true
+            case .strong(let children), .emphasis(let children), .strikethrough(let children), .highlight(let children),
+                .underline(let children):
+                return holdsCode(children)
+            default: return false
+            }
         }
     }
 
@@ -795,6 +953,13 @@ public struct NotionPageReader {
             {
                 return .page(target, heading: heading(inPage: pageIdentifier, block: blockIdentifier))
             }
+            // A page of the export published elsewhere (`https://site.github.io/people/Name-<32 digits>`) is the page.
+            if let address = WebAddress(href),
+                let identifier = NotionPageReader.trailingIdentifier(of: address.path.split(separator: "/").last.map(String.init) ?? ""),
+                let target = resolver.target(ofPage: identifier)
+            {
+                return .page(target, heading: nil)
+            }
             return .external(href)
         }
         if lowered.hasPrefix("data:") {
@@ -809,10 +974,12 @@ public struct NotionPageReader {
         let components = resolvedComponents(path)
         if let last = components.last, last.lowercased().hasSuffix(".html") {
             let name = NotionExportEntryName(last)
-            if let identifier = name?.pageIdentifier ?? resolver.pageIdentifier(atExportPath: components),
-                let target = resolver.target(ofPage: identifier) ?? resolver.pageIdentifier(atExportPath: components)
-                    .flatMap({ resolver.target(ofPage: $0) })
-            {
+            // The page by the identifier of its name, by its path, or by the identifier its name ends with in an
+            // export whose files were renamed (`William-Dixon-<32 digits>.html`).
+            let candidates = [name?.pageIdentifier, resolver.pageIdentifier(atExportPath: components),
+                              NotionPageReader.trailingIdentifier(of: String(last.dropLast(".html".count)))]
+            for case let identifier? in candidates {
+                guard let target = resolver.target(ofPage: identifier) else { continue }
                 let blockIdentifier = fragment.flatMap(NotionPageReader.hyphenatedIdentifier)
                 return .page(target, heading: blockIdentifier.flatMap { heading(inPage: identifier, block: $0) })
             }
@@ -864,6 +1031,15 @@ public struct NotionPageReader {
         let digits = String(last.suffix(32))
         guard let page = hyphenatedIdentifier(digits) else { return nil }
         return (page, address.fragment.flatMap(hyphenatedIdentifier))
+    }
+
+    /// The page identifier a name ends with, after a `-` or a space, or that the name is: 32 hexadecimal digits.
+    static func trailingIdentifier(of name: String) -> String? {
+        let digits = String(name.suffix(32))
+        guard digits.count == 32, digits.allSatisfy({ $0.isHexDigit }) else { return nil }
+        let before = name.dropLast(32).last
+        guard before == nil || before == "-" || before == " " else { return nil }
+        return hyphenatedIdentifier(digits)
     }
 
     /// An identifier written with or without hyphens, as Notion's API writes it: lowercase, hyphenated.

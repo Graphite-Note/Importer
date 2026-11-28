@@ -6,8 +6,8 @@
  *              class) into a typed Obsidian property: text, number, check box, date, list, links to pages and files.
  *
  * Authors: Bahey Shalash
- * Version: 0.2
- * Date: 27/11/2026
+ * Version: 0.3
+ * Date: 28/11/2026
  */
 
 import ImporterCore
@@ -71,7 +71,12 @@ public struct NotionPropertyReader {
             if let number = NotionPropertyReader.number(text) {
                 return Property(name: name, value: .number(number), type: .number)
             }
-            return Property(name: name, value: .text(text), type: .number)
+            if let (number, format) = NotionPropertyReader.formattedNumber(text) {
+                warning = "the number “\(text)” of the property “\(name)” was kept as \(number), without Notion's \(format) format"
+                return Property(name: name, value: .number(number), type: .number)
+            }
+            warning = "the number “\(text)” of the property “\(name)” could not be read, so it was kept as text"
+            return Property(name: name, value: .text(text), type: .text)
         case "date", "created_time", "last_edited_time":
             return date(name: name, cell: cell, text: text)
         case "multi_select":
@@ -139,6 +144,45 @@ public struct NotionPropertyReader {
         }
         return Property(name: name, value: .date(dates[0].propertyText), type: type)
     }
+
+    /// The number a formatted number of Notion's stands for, and the format: `15%` is 0.15 (Notion keeps a percent as its
+    /// fraction), `£42,000.00` is 42000, `1,234` is 1234. `nil` for text that is no number so written.
+    static func formattedNumber(_ text: String) -> (number: String, format: String)? {
+        var body = text.trimmingSpaces()
+        var isPercent = false
+        if body.hasSuffix("%") {
+            isPercent = true
+            body = String(body.dropLast()).trimmingSpaces()
+        }
+        var currency = ""
+        while let first = body.first, currencySymbols.contains(first) {
+            currency.append(first)
+            body = String(body.dropFirst()).trimmingSpaces()
+        }
+        while let last = body.last, currencySymbols.contains(last) {
+            currency = String(last) + currency
+            body = String(body.dropLast()).trimmingSpaces()
+        }
+        let parts = body.split(separator: ".", omittingEmptySubsequences: false)
+        guard !body.isEmpty, parts.count <= 2 else { return nil }
+        let groups = parts[0].split(separator: ",", omittingEmptySubsequences: false)
+        if groups.count > 1 {
+            let first = groups[0].hasPrefix("-") ? groups[0].dropFirst() : groups[0]
+            guard (1...3).contains(first.count), groups.dropFirst().allSatisfy({ $0.count == 3 }) else { return nil }
+        }
+        let plain = groups.joined() + (parts.count == 2 ? "." + parts[1] : "")
+        guard isPercent || !currency.isEmpty || groups.count > 1, let number = number(plain), let value = Double(number) else {
+            return nil
+        }
+        if isPercent {
+            let fraction = value / 100
+            let written = fraction == fraction.rounded() && abs(fraction) < 1e15 ? String(Int64(fraction)) : String(fraction)
+            return (written, "percent")
+        }
+        return (number, currency.isEmpty ? "thousands separator" : "currency (\(currency))")
+    }
+
+    private static let currencySymbols: Set<Character> = ["$", "€", "£", "¥", "₹", "₩", "₽", "₺", "₪", "₫", "฿", "₴", "₦", "₱", "¢", "₣", "₡"]
 
     /// A number as a property writes it, `nil` when `text` is no plain number (`$1,234.56` and `15%` stay text).
     static func number(_ text: String) -> String? {
