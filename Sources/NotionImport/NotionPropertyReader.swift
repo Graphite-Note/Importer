@@ -6,7 +6,7 @@
  *              class) into a typed Obsidian property: text, number, check box, date, list, links to pages and files.
  *
  * Authors: Bahey Shalash
- * Version: 0.4
+ * Version: 0.5
  * Date: 28/11/2026
  */
 
@@ -234,6 +234,13 @@ public struct NotionPropertyReader {
         ]
         return types[name]
     }
+
+    /// The name of a property Notion shows without one: Notion's own word for what has no name.
+    static func propertyName(_ shown: String) -> String {
+        shown.isEmpty ? "Untitled" : shown
+    }
+
+    static let unnamedPropertyMessage = "a property without a name was named “Untitled”, as Notion calls what has no name"
 
     /// A number as a property writes it, `nil` when `text` is no plain number (`$1,234.56` and `15%` stay text).
     static func number(_ text: String) -> String? {

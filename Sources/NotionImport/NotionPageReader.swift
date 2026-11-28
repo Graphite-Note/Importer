@@ -8,7 +8,7 @@
  *              link resolved by page identifier.
  *
  * Authors: Bahey Shalash
- * Version: 0.4
+ * Version: 0.5
  * Date: 28/11/2026
  */
 
@@ -54,10 +54,15 @@ public protocol NotionLinkResolving {
     /// The one database of the export whose title is `title`, spaces and case aside, for a linked view that names no
     /// row of it; `nil` when none or several have that title.
     func database(titled title: String) -> NotionLinkTarget?
+    /// The rows `rowIdentifiers` (hyphenated, lowercase) of a database that a view on a page shows: the folder of
+    /// their notes, the note of each row in it, in order, and whether those are all the folder's notes; `nil` when no
+    /// row has a note.
+    func rowNotes(_ rowIdentifiers: [String]) -> (folder: VaultPath, notes: [VaultPath], isEveryNote: Bool)?
 }
 
 extension NotionLinkResolving {
     public func database(titled title: String) -> NotionLinkTarget? { nil }
+    public func rowNotes(_ rowIdentifiers: [String]) -> (folder: VaultPath, notes: [VaultPath], isEveryNote: Bool)? { nil }
 }
 
 /// A finding of reading a page, for the import report.
@@ -83,6 +88,34 @@ public struct NotionDatabaseTable: Equatable, Sendable {
     public var rowTitles: [String]
     /// The share of the table's width each column takes, in percent, as its `colgroup` gives it (since 2025).
     public var columnWidths: [Double?] = []
+
+    /// The base view of this table: its columns in order, each at its width, and the names they show.
+    func baseView(named name: String) -> (view: BaseFile.View, displayNames: [(property: String, displayName: String)]) {
+        // The columns in the table's order, the title (the note's name) where Notion shows it.
+        var displayNames: [(property: String, displayName: String)] = []
+        var order: [String] = []
+        for column in columns {
+            if column.isTitle {
+                displayNames.append(("file.name", column.name))
+                order.append("file.name")
+                continue
+            }
+            let property = column.notionType == "multi_select" && column.name.lowercased() == "tags" ? "tags" : column.name
+            if property != column.name { displayNames.append((property, column.name)) }
+            order.append(property)
+        }
+        if !order.contains("file.name") { order.insert("file.name", at: 0) }
+        var view = BaseFile.View(type: "table", name: name, order: order)
+        // The columns' widths, as the table's share of a page Notion shows at 720 points, wider for many columns.
+        if columnWidths.count == columns.count, order.count == columns.count {
+            let tableWidth = Double(max(720, 160 * columns.count))
+            for (property, width) in zip(order, columnWidths) {
+                let key = property == "file.name" ? "file.name" : "note." + property
+                if let width { view.columnSizes.append((key, max(60, Int((width / 100 * tableWidth).rounded())))) }
+            }
+        }
+        return (view, displayNames)
+    }
 }
 
 /// One page of Notion's HTML export, read.
@@ -222,7 +255,7 @@ public struct NotionPageReader {
         if let body {
             for heading in body.descendants(where: { ["h1", "h2", "h3"].contains($0.tagName ?? "") }) {
                 if let identifier = heading.attributes["id"].flatMap(NotionPageReader.hyphenatedIdentifier) {
-                    headingTextByBlock[identifier] = heading.textContent.trimmingSpacesAndLineBreaks()
+                    headingTextByBlock[identifier] = NotionPageReader.headingName(of: heading)
                 }
             }
         }
@@ -384,7 +417,8 @@ public struct NotionPageReader {
                         NotionPageReader.appendJoiningLists(block, to: &result)
                     }
                 }
-                if !produced.isEmpty { previousWasPageLink = isPageLink }
+                // An empty paragraph between two links to pages is a gap Notion shows: the links stay apart.
+                previousWasPageLink = isPageLink && !produced.isEmpty
             } else {
                 inlineRun.append(node)
             }
@@ -637,10 +671,13 @@ public struct NotionPageReader {
         let contentHolder = parts.last
         var icon: (emoji: String?, name: String?)?
         if parts.count >= 2, let iconHolder = parts.first {
-            if let emoji = NotionPageReader.emoji(in: iconHolder) ?? figure.attributes["data-notion-callout-icon"].flatMap({ $0.isEmpty ? nil : $0 }) {
+            // Since 2025 the attribute names the icon: an emoji, or the address of one of Notion's own icons.
+            let named = figure.attributes["data-notion-callout-icon"].flatMap { $0.isEmpty ? nil : $0 }
+            if let emoji = NotionPageReader.emoji(in: iconHolder) ?? named.flatMap({ $0.contains("/") ? nil : $0 }) {
                 icon = (emoji, nil)
-            } else if let image = iconHolder.firstDescendant(where: { $0.tagName == "img" }) {
-                icon = (nil, NotionCallouts.iconName(fromSource: image.attributes["src"] ?? ""))
+            } else if let source = named ?? iconHolder.firstDescendant(where: { $0.tagName == "img" })?.attributes["src"] {
+                let name = NotionCallouts.iconName(fromSource: source)
+                icon = (name.flatMap { NotionCallouts.iconEmoji[$0] }, name)
             } else {
                 let emoji = iconHolder.textContent.trimmingSpacesAndLineBreaks()
                 if !emoji.isEmpty { icon = (emoji, nil) }
@@ -808,6 +845,22 @@ public struct NotionPageReader {
             if inlineDatabases[identifier] == nil { inlineDatabases[identifier] = readDatabaseTable(table) }
             return [.paragraph([.wikiLink(target: base, label: nil, isEmbed: true)])]
         }
+        let name = holder?.firstDescendant(where: { $0.hasClass("collection-title") })?.textContent
+            .trimmingSpacesAndLineBreaks() ?? ""
+        // A view of a database shown on another page: a base of the database's rows, in the page, with the view's
+        // columns and the rows it shows.
+        let shown = readDatabaseTable(table)
+        if let rows = resolver.rowNotes(shown.rowPageIdentifiers) {
+            var (view, displayNames) = shown.baseView(named: name.isEmpty ? "Table" : name)
+            if !rows.isEveryNote {
+                view.anyOf = rows.notes.map { path in
+                    "file.path == \"" + path.description.replacingEvery("\\", with: "\\\\").replacingEvery("\"", with: "\\\"") + "\""
+                }
+                note(.simplified, "the view \(name.isEmpty ? "" : "“\(name)” ")of a database shows the rows it showed in Notion: the export does not give the view's filter")
+            }
+            let base = BaseFile(folder: rows.folder, displayNames: displayNames, views: [view])
+            return [.codeBlock(language: "base", code: base.yaml)]
+        }
         // Else the database whose folder holds the rows the table links to.
         if let href = table.firstDescendant(where: { $0.hasClass("cell-title") })?
             .firstDescendant(where: { $0.tagName == "a" })?.attributes["href"]
@@ -822,8 +875,6 @@ public struct NotionPageReader {
                 }
             }
         }
-        let name = holder?.firstDescendant(where: { $0.hasClass("collection-title") })?.textContent
-            .trimmingSpacesAndLineBreaks() ?? ""
         // A linked view whose filter shows no row names its database by its title alone.
         if !name.isEmpty, let base = resolver.database(titled: name)?.embeddedBase {
             note(.simplified, "the view “\(name)” of a database shows the database's base, without the view's own filter, which the export does not give")
@@ -863,7 +914,7 @@ public struct NotionPageReader {
             // Since 2025 the column's type is the name of its icon's picture (`…/icons/calendar_gray.svg`).
             let iconType = cell.firstDescendant(where: { $0.tagName == "img" })?.attributes["src"]
                 .flatMap(NotionPropertyReader.notionType(ofIconAddress:))
-            return NotionDatabaseTable.Column(name: textWithoutIcons(cell).trimmingSpacesAndLineBreaks(),
+            return NotionDatabaseTable.Column(name: NotionPropertyReader.propertyName(textWithoutIcons(cell).trimmingSpacesAndLineBreaks()),
                                               notionType: typeClass.map(NotionPropertyReader.notionType(ofIconClass:)) ?? iconType,
                                               isTitle: typeClass == "typesTitle" || iconType == "title")
         }
@@ -902,7 +953,12 @@ public struct NotionPageReader {
             }.first ?? 0
             let text = item.textContent.trimmingSpacesAndLineBreaks()
             guard !text.isEmpty else { continue }
-            let link = MarkdownInline.wikiLink(target: "#" + NotionPageReader.headingLinkText(text), label: nil, isEmbed: false)
+            // The entry names its heading as the note writes it (its math, its color), which a link must match.
+            let block = item.firstDescendant(where: { $0.tagName == "a" })?.attributes["href"]
+                .flatMap { $0.hasPrefix("#") ? NotionPageReader.hyphenatedIdentifier(String($0.dropFirst())) : nil }
+            let name = block.flatMap { headingTextByBlock[$0] } ?? text
+            let label = name == text ? nil : text
+            let link = MarkdownInline.wikiLink(target: "#" + NotionPageReader.headingLinkText(name), label: label, isEmbed: false)
             entries.append((level, MarkdownListItem(blocks: [.paragraph([link])])))
         }
         func nest(_ slice: ArraySlice<(level: Int, item: MarkdownListItem)>) -> [MarkdownListItem] {
@@ -948,9 +1004,10 @@ public struct NotionPageReader {
             guard let tag = node.tagName else { continue }
             switch tag {
             case "br":
-                // Notion writes a line break before a change of style right after a line break: the first is dropped.
+                // Before 2025 Notion wrote a line break before a change of style right after a line break: the first
+                // is dropped. Since then (blocks carry `dir`) every line break is one.
                 if let nextTag = NotionPageReader.nodeAfter(node, in: nodes, at: index)?.tagName,
-                    NotionPageReader.formattingTags.contains(nextTag)
+                    NotionPageReader.formattingTags.contains(nextTag), !NotionPageReader.isInBlockWithDirection(node)
                 {
                     continue
                 }
@@ -965,13 +1022,24 @@ public struct NotionPageReader {
                 result.append(.underline(inlines(of: node.children)))
             case "mark":
                 let color = node.classes.compactMap(NotionColors.colorName(fromClass:)).first
-                    ?? node.attributes["data-notion-highlight"].flatMap { $0 == "default" ? nil : $0 }
+                    ?? node.attributes["data-notion-highlight"].flatMap { $0 == "default" || $0 == "default_background" ? nil : $0 }
                 let children = inlines(of: node.children)
                 result.append(contentsOf: color.map { NotionColors.colored(children, color: $0) } ?? children)
             case "code":
-                result.append(.code(node.textContent))
+                // Bold or italic over the whole code (`<code><strong>…</strong></code>`) is written around it.
+                result.append(NotionPageReader.styled(.code(node.textContent), as: NotionPageReader.wholeStyles(of: node)))
             case "a":
-                result.append(contentsOf: link(node))
+                let linked = link(node)
+                // A wiki link's label holds no spaces at its edges, nor a style: the spaces stand beside it, as the
+                // text shows them, and a style over the whole label is written around the link.
+                if linked.count == 1, case .wikiLink(_, _, false) = linked[0] {
+                    let text = node.textContent
+                    if text.first?.isWhitespace == true, text.contains(where: { !$0.isWhitespace }) { result.append(.text(" ")) }
+                    result.append(NotionPageReader.styled(linked[0], as: NotionPageReader.wholeStyles(of: node)))
+                    if text.last?.isWhitespace == true, text.contains(where: { !$0.isWhitespace }) { result.append(.text(" ")) }
+                } else {
+                    result.append(contentsOf: linked)
+                }
             case "time":
                 result.append(.text(node.textContent.replacingEvery("@", with: "")))
             case "img":
@@ -1004,9 +1072,10 @@ public struct NotionPageReader {
                 }
             default:
                 if NotionPageReader.isBlock(node) {
-                    // A block inside inline content: its text, on its own line.
+                    // A block inside inline content (a toggle heading's `h2` in its `summary`): its content, on its
+                    // own line.
                     result.append(.lineBreak)
-                    result.append(.text(node.textContent))
+                    result.append(contentsOf: inlines(of: node.children))
                 } else {
                     result.append(contentsOf: inlines(of: node.children))
                 }
@@ -1016,6 +1085,60 @@ public struct NotionPageReader {
     }
 
     /// The node after `node` in reading order: its next sibling, or the next sibling of the style it ends.
+    /// A heading's text as its note writes it (`Step 2: azimuth $\\alpha$`, a colored heading in its `<mark>`), which a
+    /// link to the heading names: Obsidian and Graphite match a link against the heading's written text.
+    public static func headingName(of heading: HTMLNode) -> String {
+        var reader = NotionPageReader(document: HTMLDocument(""), exportFolder: [], resolver: NoLinks(),
+                                      dateParser: NotionDateParser(defaultYear: 2000))
+        let blocks = reader.blocks(ofElement: heading)
+        guard case .heading(_, let inlines)? = blocks.first else { return heading.textContent.trimmingSpacesAndLineBreaks() }
+        return MarkdownWriter.headingLine(inlines)
+    }
+
+    /// No page, attachment or heading: what a heading's name is read against.
+    private struct NoLinks: NotionLinkResolving {
+        func target(ofPage identifier: String) -> NotionLinkTarget? { nil }
+        func attachmentTarget(atExportPath exportPath: [String]) -> String? { nil }
+        func pageIdentifier(atExportPath exportPath: [String]) -> String? { nil }
+        func headingText(inPage pageIdentifier: String, block blockIdentifier: String) -> String? { nil }
+    }
+
+    /// The styles over the whole content of `node`: the tags of the one element it holds, of the one that holds, and
+    /// so on (`<strong><em>x</em></strong>` gives `strong`, `em`).
+    static func wholeStyles(of node: HTMLNode) -> [String] {
+        var styles: [String] = []
+        var inner = node
+        while case let elements = inner.children.filter({ $0.tagName != nil || !($0.text ?? "").trimmingSpacesAndLineBreaks().isEmpty }),
+            elements.count == 1, let only = elements.first, let tag = only.tagName,
+            ["strong", "b", "em", "i", "del", "s", "strike", "code"].contains(tag)
+        {
+            if tag != "code" { styles.append(tag) }
+            inner = only
+        }
+        return styles
+    }
+
+    /// `inline` in the styles `tags`, the first outermost.
+    static func styled(_ inline: MarkdownInline, as tags: [String]) -> MarkdownInline {
+        tags.reversed().reduce(inline) { inner, tag in
+            switch tag {
+            case "strong", "b": return .strong([inner])
+            case "em", "i": return .emphasis([inner])
+            default: return .strikethrough([inner])
+            }
+        }
+    }
+
+    /// Whether a block holding `node` has a `dir` attribute, as every block of Notion's export since 2025 has.
+    private static func isInBlockWithDirection(_ node: HTMLNode) -> Bool {
+        var current = node.parent
+        while let ancestor = current {
+            if ancestor.attributes["dir"] != nil { return true }
+            current = ancestor.parent
+        }
+        return false
+    }
+
     private static func nodeAfter(_ node: HTMLNode, in nodes: [HTMLNode], at index: Int) -> HTMLNode? {
         if index + 1 < nodes.count { return nodes[index + 1] }
         var current = node
@@ -1247,10 +1370,12 @@ public struct NotionPageReader {
     // MARK: Properties
 
     private mutating func readProperty(_ row: HTMLNode) -> [NotionPropertyReader.Property] {
-        guard let name = row.elementChildren.first(where: { $0.tagName == "th" }).map({ textWithoutIcons($0) })?
-            .trimmingSpacesAndLineBreaks(), !name.isEmpty,
+        guard let shownName = row.elementChildren.first(where: { $0.tagName == "th" }).map({ textWithoutIcons($0) })?
+            .trimmingSpacesAndLineBreaks(),
             let cell = row.elementChildren.first(where: { $0.tagName == "td" })
         else { return [] }
+        let name = NotionPropertyReader.propertyName(shownName)
+        if shownName.isEmpty { note(.simplified, NotionPropertyReader.unnamedPropertyMessage) }
         let notionType = row.classes.first(where: { $0.hasPrefix("property-row-") })
             .map { String($0.dropFirst("property-row-".count)) } ?? "text"
         let links = cell.descendants(where: { $0.tagName == "a" }).map { anchor -> String in
@@ -1296,7 +1421,8 @@ enum NotionCallouts {
     /// The name of a Notion icon from its address: `https://www.notion.so/icons/info-alternate_green.svg` gives
     /// `info-alternate`.
     static func iconName(fromSource source: String) -> String? {
-        guard source.contains(text: "notion.so/icons/") else { return nil }
+        guard source.contains(text: "notion.so/icons/") || source.contains(text: "notion.com/icons/") || source.hasPrefix("/icons/")
+        else { return nil }
         let file = source.split(separator: "/").last.map(String.init) ?? ""
         let stem = file.split(separator: ".").first.map(String.init) ?? file
         return stem.split(separator: "_").first.map(String.init)
@@ -1310,7 +1436,14 @@ enum NotionCallouts {
         "📌": "note", "💬": "quote", "📋": "abstract", "🧪": "example", "📎": "note",
     ]
 
+    /// The emoji that draws the same sign as one of Notion's own icons, where one does.
+    static let iconEmoji: [String: String] = [
+        "exclamation-mark-double": "‼️", "exclamation-mark": "❗", "question-mark": "❓", "warning": "⚠️",
+        "lightbulb": "💡", "checkmark": "✔️", "checkmark-square": "☑️", "close": "✖️", "star": "⭐", "pin": "📌",
+    ]
+
     private static let iconTypes: [(String, String)] = [
+        ("exclamation", "important"),
         ("info", "info"), ("warning", "warning"), ("alert", "warning"), ("error", "danger"), ("lightbulb", "tip"),
         ("checkmark", "success"), ("check", "success"), ("question", "question"), ("bug", "bug"), ("close", "failure"),
         ("clear", "failure"), ("quote", "quote"),

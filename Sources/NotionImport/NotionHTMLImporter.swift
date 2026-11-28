@@ -7,7 +7,7 @@
  *              attachments in pieces, assigns the property types and writes the import report.
  *
  * Authors: Bahey Shalash
- * Version: 0.4
+ * Version: 0.5
  * Date: 28/11/2026
  */
 
@@ -155,7 +155,9 @@ public enum NotionHTMLImporter {
                 let read = NotionPageReader.read(html: html, exportPath: page.file.pathComponents, resolver: plan,
                                                  dateParser: dateParser)
                 for finding in read.findings {
-                    if finding.message.hasPrefix("ranges of dates in the property") || finding.message.hasPrefix("numbers of the property") {
+                    if finding.message.hasPrefix("ranges of dates in the property") || finding.message.hasPrefix("numbers of the property")
+                        || finding.message == NotionPropertyReader.unnamedPropertyMessage
+                    {
                         if onceFindings.insert(finding.message).inserted { report.record(finding.severity, at: nil, finding.message) }
                         continue
                     }
@@ -201,7 +203,7 @@ public enum NotionHTMLImporter {
             do {
                 let header = CSVTable(String(decoding: try await csv.contents(), as: UTF8.self)).header
                 let columns = header.enumerated().map { index, name in
-                    NotionDatabaseTable.Column(name: name, notionType: nil, isTitle: index == 0)
+                    NotionDatabaseTable.Column(name: NotionPropertyReader.propertyName(name), notionType: nil, isTitle: index == 0)
                 }
                 let table = NotionDatabaseTable(columns: columns, rowPageIdentifiers: [], rowTitles: [])
                 let databasePage = NotionPage(identifier: identifier, title: plan.title(ofPage: identifier) ?? "", frontMatter: FrontMatter(),
@@ -264,28 +266,7 @@ public enum NotionHTMLImporter {
         let rowsFolder = rowsInFolder.sorted { left, right in
             left.value != right.value ? left.value > right.value : left.key.description < right.key.description
         }.first?.key ?? placement.childFolder ?? placement.path.parent ?? plan.rootFolder
-        var displayNames: [(property: String, displayName: String)] = []
-        var order = ["file.name"]
-        for column in database.columns {
-            if column.isTitle {
-                displayNames.append(("file.name", column.name))
-                continue
-            }
-            let name = column.notionType == "multi_select" && column.name.lowercased() == "tags" ? "tags" : column.name
-            if name != column.name { displayNames.append((name, column.name)) }
-            order.append(name)
-        }
-        var view = BaseFile.View(type: "table", name: "Table", order: order)
-        // The columns' widths, as the table's share of a page Notion shows at 720 points, wider for many columns.
-        if database.columnWidths.count == database.columns.count {
-            let tableWidth = Double(max(720, 160 * database.columns.count))
-            var nonTitleIndex = 1
-            for (column, width) in zip(database.columns, database.columnWidths) {
-                let key = column.isTitle ? "file.name" : "note." + order[min(nonTitleIndex, order.count - 1)]
-                if !column.isTitle { nonTitleIndex += 1 }
-                if let width { view.columnSizes.append((key, max(60, Int((width / 100 * tableWidth).rounded())))) }
-            }
-        }
+        let (view, displayNames) = database.baseView(named: "Table")
         let base = BaseFile(folder: rowsFolder, displayNames: displayNames, views: [view])
         let basePath = placement.basePath ?? placement.path
         try await destination.writeNewFile(Array(base.yaml.utf8), at: basePath)
@@ -320,7 +301,8 @@ public enum NotionHTMLImporter {
             var frontMatter = FrontMatter()
             for column in table.header where column != titleColumn {
                 let text = table.value(column, in: row).trimmingSpacesAndLineBreaks()
-                for (name, value, type) in csvProperties(column, text: text, notionType: columnTypes[column], dateParser: dateParser) {
+                let named = NotionPropertyReader.propertyName(column)
+                for (name, value, type) in csvProperties(named, text: text, notionType: columnTypes[named], dateParser: dateParser) {
                     frontMatter.set(name, to: value)
                     assignType(name, type, rowsFolder, &report)
                 }
@@ -515,9 +497,8 @@ struct NotionPageSummary: Sendable {
                     let close = html.range(ofText: "</h\(level)>", in: tagEnd..<html.endIndex)
                 else { break }
                 let identifier = NotionPageReader.hyphenatedIdentifier(String(html[range.upperBound..<quote]))
-                let inner = String(html[html.index(after: tagEnd)..<close.lowerBound])
-                if let identifier {
-                    headings[identifier] = HTMLDocument(inner).root.textContent.trimmingSpacesAndLineBreaks()
+                if let identifier, let heading = HTMLDocument(String(html[range.lowerBound..<close.upperBound])).root.elementChildren.first {
+                    headings[identifier] = NotionPageReader.headingName(of: heading)
                 }
                 searchStart = close.upperBound
             }

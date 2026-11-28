@@ -6,7 +6,7 @@
  *              it names and its views, written as the YAML Obsidian and Graphite read.
  *
  * Authors: Bahey Shalash
- * Version: 0.4
+ * Version: 0.5
  * Date: 28/11/2026
  */
 
@@ -28,6 +28,8 @@ public struct BaseFile: Equatable, Sendable {
         public var sort: [(property: String, direction: String)]
         /// The view's own filters, as Bases expressions all of which must hold.
         public var filters: [String]
+        /// Further filters of the view, as Bases expressions one of which must hold.
+        public var anyOf: [String] = []
         /// The property a card shows as its picture, and how it fits (`cover`, `contain`).
         public var image: String?
         public var imageFit: String?
@@ -50,7 +52,7 @@ public struct BaseFile: Equatable, Sendable {
         public static func == (left: View, right: View) -> Bool {
             left.type == right.type && left.name == right.name && left.order == right.order
                 && left.groupBy?.property == right.groupBy?.property && left.groupBy?.direction == right.groupBy?.direction
-                && left.groupOrder == right.groupOrder && left.filters == right.filters && left.image == right.image && left.imageFit == right.imageFit
+                && left.groupOrder == right.groupOrder && left.filters == right.filters && left.anyOf == right.anyOf && left.image == right.image && left.imageFit == right.imageFit
                 && left.sort.count == right.sort.count
                 && zip(left.sort, right.sort).allSatisfy { $0.property == $1.property && $0.direction == $1.direction }
                 && left.columnSizes.count == right.columnSizes.count
@@ -104,10 +106,19 @@ public struct BaseFile: Equatable, Sendable {
         for view in views {
             lines.append("  - type: \(YAMLScalar.quotedIfNeeded(view.type))")
             lines.append("    name: \(YAMLScalar.quotedIfNeeded(view.name))")
-            if !view.filters.isEmpty {
+            if !view.filters.isEmpty || !view.anyOf.isEmpty {
                 lines.append("    filters:")
-                lines.append("      and:")
-                lines.append(contentsOf: view.filters.map { "        - \(YAMLScalar.quotedIfNeeded($0))" })
+                if view.filters.isEmpty {
+                    lines.append("      or:")
+                    lines.append(contentsOf: view.anyOf.map { "        - \(YAMLScalar.quotedIfNeeded($0))" })
+                } else {
+                    lines.append("      and:")
+                    lines.append(contentsOf: view.filters.map { "        - \(YAMLScalar.quotedIfNeeded($0))" })
+                    if !view.anyOf.isEmpty {
+                        lines.append("        - or:")
+                        lines.append(contentsOf: view.anyOf.map { "            - \(YAMLScalar.quotedIfNeeded($0))" })
+                    }
+                }
             }
             if let groupBy = view.groupBy {
                 lines.append("    groupBy:")
