@@ -137,8 +137,8 @@ struct NotionExport2026Tests {
         defer { vault.remove() }
         let note = try vault.text("Notion/Home.md")
         #expect(note.hasPrefix("---\nicon: 🏢\n---\n"), "\(note)")
-        // After `<br>` an address is no autolink, so it is written between `<` and `>`.
-        #expect(note.contains("> [!danger] 🌐 **Go see the videos**<br><https://example.com/videos>\n"), "\(note)")
+        // A callout's icon heads it, its text is its body, as Notion draws it.
+        #expect(note.contains("> [!danger] 🌐\n> **Go see the videos**  \n> https://example.com/videos\n"), "\(note)")
         #expect(note.contains("> [!multi-column]\n> > [!blank]\n> > [[Projects]]  \n> > [[Brakes]]\n>\n> > [!blank|wide-2]\n"), "\(note)")
         // Text colors in the Colors plugin's syntax, which Graphite reads and writes, the yellow background a highlight.
         #expect(note.contains("> > ## ~={#e05a52}Admin=~\n"), "\(note)")

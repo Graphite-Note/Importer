@@ -140,7 +140,8 @@ struct NotionMadeUpExportTests {
         #expect(try vault.text("School/Notion/Course 2/\(longStem).md").contains("title: \(longTitle)\n"))
         #expect(course.contains("See [[Week 1]] and [[\(longStem)|the long one]]."))
         #expect(course.contains("> [!note]- Hidden part\n> Inside the toggle."))
-        #expect(course.contains("> [!warning] ⚠️ Mind the **deadline**\n> It is on Friday."))
+        // A callout's icon heads it, its text is its body, as Notion draws it.
+        #expect(course.contains("> [!warning] ⚠️\n> Mind the **deadline**\n>\n> It is on Friday."), "\(course)")
         #expect(course.contains("> [!multi-column]\n> > [!blank]\n> > Left\n>\n> > [!blank]\n> > Right\n"))
         #expect(course.contains("```cpp\nint main() { return 0; }\n```"))
         #expect(course.contains("Energy $E = mc^2$ costs \\$5 and \\#tag."))
@@ -171,7 +172,7 @@ struct NotionMadeUpExportTests {
                 displayName: Tags
             views:
               - type: table
-                name: Table
+                name: Lectures
                 order:
                   - file.name
                   - Date

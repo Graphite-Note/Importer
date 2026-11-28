@@ -100,8 +100,8 @@ public struct NotionDatabaseTable: Equatable, Sendable {
     public var columnWidths: [Double?] = []
 
     /// The formula a base shows as its rows' names where some row's note is not named by its whole title (a title a
-    /// file name cannot hold): the note's `title`, else its name, a link to the note either way.
-    static let titleFormula = (name: "title", expression: "file.asLink(if(note.title, note.title, file.name))")
+    /// file name cannot hold): the note's `title`, else its name without `.md`, a link to the note either way.
+    static let titleFormula = (name: "title", expression: "file.asLink(if(note.title, note.title, file.basename))")
 
     /// The base view of this table: its columns in order, each at its width, and the names they show. With
     /// `showsTitles` the rows' names are their whole titles (`titleFormula`), which some rows' file names cannot hold.
@@ -724,10 +724,9 @@ public struct NotionPageReader {
             ?? figure.classes.compactMap(NotionColors.colorName(fromClass:)).first
         let type = background.flatMap(NotionColors.calloutType(forBackground:))
             ?? NotionCallouts.calloutType(emoji: icon?.emoji, iconName: icon?.name)
-        if let emoji = icon?.emoji {
-            title = MarkdownInlineNormalizer.isBlank(title) ? [.text(emoji)] : [.text(emoji + " ")] + title
-        }
-        return .callout(type: type, title: title, folding: .notFoldable, body: blocks(of: content))
+        // Notion's callout has no title: its icon heads it, its text is its body, plain as Notion draws it.
+        let body = (MarkdownInlineNormalizer.isBlank(title) ? [] : [MarkdownBlock.paragraph(title)]) + blocks(of: content)
+        return .callout(type: type, title: icon?.emoji.map { [.text($0)] } ?? [], folding: .notFoldable, body: body)
     }
 
     private mutating func linkToPage(_ figure: HTMLNode) -> [MarkdownBlock] {

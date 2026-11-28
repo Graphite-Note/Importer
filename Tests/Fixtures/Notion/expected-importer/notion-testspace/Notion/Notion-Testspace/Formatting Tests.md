@@ -64,7 +64,10 @@ A further-indented text block, equal to a single new paragraph.
 >
 > —still the same block down here, but equivalent to a new paragraph in Obsidian.
 
-> [!info] Title of the callout…<br>with a **linebreak** here.
+> [!info]
+> Title of the callout…  
+> with a **linebreak** here.
+>
 > This paragraph of the callout…  
 > has a _**linebreak**_ here.
 >
@@ -72,10 +75,13 @@ A further-indented text block, equal to a single new paragraph.
 >
 > has a _**double linebreak**_ here.
 
-> [!info] _**A Formatted Callout Title**_
+> [!info]
+> _**A Formatted Callout Title**_
+>
 > The formatting should work as normal within the title.
 
-> [!info] Callout body with no title.
+> [!info]
+> Callout body with no title.
 
 # Nested Formatting
 
@@ -131,13 +137,19 @@ It may be useful to encode Obsidian callouts as modified quote-blocks. We just n
 > >
 > > We can do it again to nest!
 
-> [!info] Title for Callout
+> [!info]
+> Title for Callout
+>
 > Below we have a nested callout.
 >
-> > [!info] Title for Nested Callout
+> > [!info]
+> > Title for Nested Callout
+> >
 > > Here is a new paragraph block in the nested callout!
 > >
-> > > [!info] Title for Double-Nested Callout
+> > > [!info]
+> > > Title for Double-Nested Callout
+> > >
 > > > Here is a new paragraph block in the double-nested callout!
 > > >
 > > > Adding more nested math for fun:
@@ -232,7 +244,9 @@ The following are already escaped for special syntax _eg_ for math or links to h
 
 Below is a callout showing a mathematical function.
 
-> [!info] Title for Callout
+> [!info]
+> Title for Callout
+>
 > This paragraph block is about the complex exponential function:
 >
 > $$
@@ -241,7 +255,9 @@ Below is a callout showing a mathematical function.
 >
 > where $t$ is time.
 
-> [!info] Title for Multiline Math Nested in Callout
+> [!info]
+> Title for Multiline Math Nested in Callout
+>
 > This paragraph block is about the complex exponential function:
 >
 > $$

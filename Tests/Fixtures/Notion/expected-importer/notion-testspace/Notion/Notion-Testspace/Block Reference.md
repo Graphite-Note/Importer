@@ -65,13 +65,18 @@ $$
 
 > This is a quote block.
 
-> [!tip] 💡 This is a callout block with an emoji icon…
+> [!tip] 💡
+> This is a callout block with an emoji icon…
+>
 > with a nested text block.
 
-> [!info] This is a callout block with a coloured Notion icon…
+> [!info]
+> This is a callout block with a coloured Notion icon…
+>
 > with a nested text block.
 
-> [!note] This is a callout block with no icon…
+> [!note]
+> This is a callout block with no icon…
 
 Below is an empty callout with an icon:
 

@@ -325,8 +325,9 @@ public enum NotionHTMLImporter {
         // A base over a folder it shares with other pages (its rows beside them) cannot know which notes will keep a
         // whole title, so it shows titles too: a note without one shows its name.
         let sharesFolder = rowsFolder != placement.childFolder
+        // The export names no view: the one view is the database's title, which Notion shows above its table.
         let (view, displayNames, formulas) = database.baseView(
-            named: "Table", showsTitles: csvTitlesShown || sharesFolder || plan.rowsHaveShownTitles(inFolder: rowsFolder))
+            named: page.title.isEmpty ? "Table" : page.title, showsTitles: csvTitlesShown || sharesFolder || plan.rowsHaveShownTitles(inFolder: rowsFolder))
         let base = BaseFile(folder: rowsFolder, displayNames: displayNames, views: [view], formulas: formulas)
         let basePath = placement.basePath ?? placement.path
         try await destination.writeNewFile(Array(base.yaml.utf8), at: basePath)

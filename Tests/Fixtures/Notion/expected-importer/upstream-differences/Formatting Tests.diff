@@ -44,7 +44,10 @@
 @@ 70
 - > [!important] Title of the callout…<br>with a **linebreak** here.
 - > 
-+ > [!info] Title of the callout…<br>with a **linebreak** here.
++ > [!info]
++ > Title of the callout…  
++ > with a **linebreak** here.
++ >
 @@ 74
 - > 
 - > This paragraph of the callout…  
@@ -57,10 +60,13 @@
 @@ 79
 - > [!important] _**A Formatted Callout Title**_
 - > 
-+ > [!info] _**A Formatted Callout Title**_
++ > [!info]
++ > _**A Formatted Callout Title**_
++ >
 @@ 83
 - > [!important] Callout body with no title.
-+ > [!info] Callout body with no title.
++ > [!info]
++ > Callout body with no title.
 @@ 87
 - ### ==A Highlighted Heading==
 + ### ==~={#d15796}A Highlighted Heading=~==
@@ -130,19 +136,25 @@
 @@ 135
 - > [!important] Title for Callout
 - > 
-+ > [!info] Title for Callout
++ > [!info]
++ > Title for Callout
++ >
 @@ 138
 - > 
 - > > [!important] Title for Nested Callout
 - > > 
 + >
-+ > > [!info] Title for Nested Callout
++ > > [!info]
++ > > Title for Nested Callout
++ > >
 @@ 142
 - > > 
 - > > > [!important] Title for Double-Nested Callout
 - > > > 
 + > >
-+ > > > [!info] Title for Double-Nested Callout
++ > > > [!info]
++ > > > Title for Double-Nested Callout
++ > > >
 @@ 146
 - > > > 
 + > > >
@@ -213,7 +225,9 @@
 @@ 236
 - > [!important] Title for Callout
 - > 
-+ > [!info] Title for Callout
++ > [!info]
++ > Title for Callout
++ >
 @@ 239
 - > 
 - > $$f(t)=Ae^{i\omega t},$$
@@ -226,7 +240,9 @@
 @@ 244
 - > [!important] Title for Multiline Math Nested in Callout
 - > 
-+ > [!info] Title for Multiline Math Nested in Callout
++ > [!info]
++ > Title for Multiline Math Nested in Callout
++ >
 @@ 247
 - > 
 - > $$\begin{align}  

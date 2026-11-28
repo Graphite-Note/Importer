@@ -233,7 +233,7 @@ struct NotionFidelityTests {
         // An empty paragraph between two links to pages is a gap: the links stay two paragraphs.
         #expect(note.contains("[[Projects.base|Projects]]\n\n[[Notes]]\n"), "\(note)")
         #expect(note.contains("A[ ](https://example.com/space)gap, nothing[](https://example.com/none)here, _[[Brakes]]_ next."), "\(note)")
-        #expect(note.contains("> [!important] ‼️ Mind the date.\n"), "\(note)")
+        #expect(note.contains("> [!important] ‼️\n> Mind the date.\n"), "\(note)")
     }
 
     @Test("A property without a name is named Untitled, once in the report")

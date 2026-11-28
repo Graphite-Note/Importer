@@ -38,7 +38,7 @@ struct NotionReadmeDemoTests {
         defer { vault.remove() }
         let note = try vault.text("Notion/Signals & Systems.md")
         #expect(note.hasPrefix("---\nicon: 📡\nbanner: https://app.notion.com/images/page-cover/gradients_10.jpg\n---\n"), "\(note)")
-        #expect(note.contains("\n> [!tip] 💡 Office hours on Tuesdays"), "\(note)")
+        #expect(note.contains("\n> [!tip] 💡\n> Office hours on Tuesdays"), "\(note)")
         #expect(note.contains("\n> [!multi-column]\n"), "\(note)")
         #expect(result.report.findings.map(\.message) == [
             "the view “Assignments” of a database shows the rows it showed in Notion: the export does not give the view's filter",
@@ -55,11 +55,13 @@ struct NotionReadmeDemoTests {
         let clean = try vault.text("Notion/Signals & Systems/Assignments/Audio filter project.md")
         #expect(!clean.contains("title:") && !clean.contains("aliases:"), "\(clean)")
         let base = try vault.text("Notion/Signals & Systems/Assignments.base")
-        #expect(base.contains("formulas:\n  title: file.asLink(if(note.title, note.title, file.name))\nproperties:\n  formula.title:\n    displayName: Name\n"), "\(base)")
+        #expect(base.contains("formulas:\n  title: file.asLink(if(note.title, note.title, file.basename))\nproperties:\n  formula.title:\n    displayName: Name\n"), "\(base)")
+        // The export names no view: the one view is the database's title, as Notion shows it above the table.
+        #expect(base.contains("    name: Assignments\n"), "\(base)")
         #expect(base.contains("    order:\n      - formula.title\n      - Due\n"), "\(base)")
         // The linked view on Sampling shows its two rows by their titles too.
         let sampling = try vault.text("Notion/Signals & Systems/Sampling.md")
-        #expect(sampling.contains("```base\nfilters: file.folder == \"Notion/Signals & Systems/Assignments\"\nformulas:\n  title: file.asLink(if(note.title, note.title, file.name))\n"), "\(sampling)")
+        #expect(sampling.contains("```base\nfilters: file.folder == \"Notion/Signals & Systems/Assignments\"\nformulas:\n  title: file.asLink(if(note.title, note.title, file.basename))\n"), "\(sampling)")
         #expect(sampling.contains("        - file.path == \"Notion/Signals & Systems/Assignments/Problem set 1 signals.md\"\n"), "\(sampling)")
     }
 }
