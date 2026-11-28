@@ -9,7 +9,7 @@
  *              links to pages by the identifier their address ends with, and names written composed.
  *
  * Authors: Bahey Shalash
- * Version: 0.2
+ * Version: 0.3
  * Date: 28/11/2026
  */
 
@@ -107,7 +107,8 @@ struct NotionFormattingTests {
         let (vault, result) = try await importExport()
         defer { vault.remove() }
         let note = try vault.text("Notion/Text.md")
-        #expect(note.contains("Built on the [Skia](https://skia.org) library, word https://example.com/a next."), "\(note)")
+        // A link whose text is a space is a linked space, as Notion shows it.
+        #expect(note.contains("Built on the [Skia](https://skia.org) library, word[ ](https://example.com/a)next."), "\(note)")
         #expect(note.contains("A source[\\[3\\]](https://example.com/notes#3) and https://example.org/council#decadal and \\#tag."), "\(note)")
         #expect(!note.contains("<>"))
         #expect(note.contains("[Read](https://example.com/read)  \nSee http://asw.im/x.y for more.\n"), "\(note)")
@@ -115,12 +116,12 @@ struct NotionFormattingTests {
         #expect(result.report.findings.contains { $0.message == "an empty bookmark, with no address, was left out" })
     }
 
-    @Test("Styles open and close where CommonMark reads them, and `$` is escaped only where math could start")
+    @Test("Styles open and close where CommonMark reads them, else are their HTML elements, and `$` is escaped only where math could start")
     func styles() async throws {
         let (vault, _) = try await importExport()
         defer { vault.remove() }
         let note = try vault.text("Notion/Text.md")
-        #expect(note.contains("Did it. Both **So**:\u{200B}Next and “We and a\u{00A0}b."), "\(note)")
+        #expect(note.contains("Did it<em>.</em> Both <strong>So:</strong>\u{200B}Next and <strong>“</strong>We and a\u{00A0}b."), "\(note)")
         #expect(note.contains("The value of _**x = π,**_ we get."), "\(note)")
         #expect(note.contains("It costs $5 and $10.\n\nBut \\$a\\$ is not math here, \\&nbsp; is text."), "\(note)")
         #expect(note.contains("## <mark style=\"background:rgba(212, 167, 44, 0.3)\">Mission</mark>\n"), "\(note)")

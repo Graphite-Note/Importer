@@ -7,7 +7,7 @@
  *              identifier whatever the names Notion shortened.
  *
  * Authors: Bahey Shalash
- * Version: 0.4
+ * Version: 0.5
  * Date: 28/11/2026
  */
 
@@ -423,12 +423,41 @@ struct NotionVaultPlan: NotionLinkResolving, Sendable {
     }
 
     func database(titled title: String) -> NotionLinkTarget? {
+        databaseIdentifier(titled: title).flatMap { target(ofPage: $0) }
+    }
+
+    func rowsFolder(ofDatabaseTitled title: String) -> VaultPath? {
+        databaseIdentifier(titled: title).flatMap { placements[$0]?.childFolder }
+    }
+
+    func rowsFolder(ofDatabase identifier: String) -> VaultPath? {
+        guard let folder = placements[identifier]?.childFolder, !notePages(inFolder: folder).isEmpty else { return nil }
+        return folder
+    }
+
+    private func databaseIdentifier(titled title: String) -> String? {
         let key = NotionVaultPlan.titleKey(title)
         let matches = placements.filter { identifier, placement in
             (placement.isBase || placement.basePath != nil) && titles[identifier].map(NotionVaultPlan.titleKey) == key
         }
-        guard matches.count == 1, let identifier = matches.first?.key else { return nil }
-        return target(ofPage: identifier)
+        guard matches.count == 1 else { return nil }
+        return matches.first?.key
+    }
+
+    func rowNotes(_ rowIdentifiers: [String]) -> (folder: VaultPath, notes: [VaultPath], isEveryNote: Bool)? {
+        let paths = rowIdentifiers.compactMap { identifier -> VaultPath? in
+            guard let placement = placements[identifier], !placement.isBase else { return nil }
+            return placement.path
+        }
+        // The folder most rows are in: a database keeps its rows in one folder.
+        var counts: [VaultPath: Int] = [:]
+        for path in paths { if let parent = path.parent { counts[parent, default: 0] += 1 } }
+        guard let folder = counts.sorted(by: { left, right in
+            left.value != right.value ? left.value > right.value : left.key.description < right.key.description
+        }).first?.key else { return nil }
+        let notes = paths.filter { $0.parent == folder }
+        let everyNote = Set(notePages(inFolder: folder).compactMap { placements[$0]?.path })
+        return (folder, notes, everyNote.isSubset(of: Set(notes)))
     }
 
     private static func titleKey(_ title: String) -> String {
