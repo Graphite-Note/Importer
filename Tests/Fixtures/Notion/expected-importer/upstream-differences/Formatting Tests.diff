@@ -44,7 +44,7 @@
 @@ 70
 - > [!important] Title of the callout…<br>with a **linebreak** here.
 - > 
-+ > [!info]
++ > [!info|no-title]
 + > Title of the callout…  
 + > with a **linebreak** here.
 + >
@@ -60,12 +60,12 @@
 @@ 79
 - > [!important] _**A Formatted Callout Title**_
 - > 
-+ > [!info]
++ > [!info|no-title]
 + > _**A Formatted Callout Title**_
 + >
 @@ 83
 - > [!important] Callout body with no title.
-+ > [!info]
++ > [!info|no-title]
 + > Callout body with no title.
 @@ 87
 - ### ==A Highlighted Heading==
@@ -136,7 +136,7 @@
 @@ 135
 - > [!important] Title for Callout
 - > 
-+ > [!info]
++ > [!info|no-title]
 + > Title for Callout
 + >
 @@ 138
@@ -144,7 +144,7 @@
 - > > [!important] Title for Nested Callout
 - > > 
 + >
-+ > > [!info]
++ > > [!info|no-title]
 + > > Title for Nested Callout
 + > >
 @@ 142
@@ -152,7 +152,7 @@
 - > > > [!important] Title for Double-Nested Callout
 - > > > 
 + > >
-+ > > > [!info]
++ > > > [!info|no-title]
 + > > > Title for Double-Nested Callout
 + > > >
 @@ 146
@@ -225,7 +225,7 @@
 @@ 236
 - > [!important] Title for Callout
 - > 
-+ > [!info]
++ > [!info|no-title]
 + > Title for Callout
 + >
 @@ 239
@@ -240,7 +240,7 @@
 @@ 244
 - > [!important] Title for Multiline Math Nested in Callout
 - > 
-+ > [!info]
++ > [!info|no-title]
 + > Title for Multiline Math Nested in Callout
 + >
 @@ 247

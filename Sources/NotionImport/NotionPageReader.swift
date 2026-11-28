@@ -724,9 +724,12 @@ public struct NotionPageReader {
             ?? figure.classes.compactMap(NotionColors.colorName(fromClass:)).first
         let type = background.flatMap(NotionColors.calloutType(forBackground:))
             ?? NotionCallouts.calloutType(emoji: icon?.emoji, iconName: icon?.name)
-        // Notion's callout has no title: its icon heads it, its text is its body, plain as Notion draws it.
+        // Notion's callout has no title: its icon heads it, its text is its body, plain as Notion draws it. One with no
+        // emoji is `[!type|no-title]`, which Graphite draws without a title row, where a bare `[!info]` shows "Info"
+        // (Obsidian ignores the metadata).
         let body = (MarkdownInlineNormalizer.isBlank(title) ? [] : [MarkdownBlock.paragraph(title)]) + blocks(of: content)
-        return .callout(type: type, title: icon?.emoji.map { [.text($0)] } ?? [], folding: .notFoldable, body: body)
+        guard let emoji = icon?.emoji else { return .callout(type: type + "|no-title", title: [], folding: .notFoldable, body: body) }
+        return .callout(type: type, title: [.text(emoji)], folding: .notFoldable, body: body)
     }
 
     private mutating func linkToPage(_ figure: HTMLNode) -> [MarkdownBlock] {

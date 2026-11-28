@@ -33,19 +33,19 @@
 @@ 72
 - > [!important] This is a callout block with a coloured Notion icon…
 - > 
-+ > [!info]
++ > [!info|no-title]
 + > This is a callout block with a coloured Notion icon…
 + >
 @@ 76
 - > [!important] This is a callout block with no icon…
-+ > [!note]
++ > [!note|no-title]
 + > This is a callout block with no icon…
 @@ 80
 - > [!important]
-+ > [!info]
++ > [!info|no-title]
 @@ 84
 - > [!important]  
-+ > [!note]
++ > [!note|no-title]
 @@ 88
 - > [!info] Cat  
 - > The cat, also referred to as the domestic cat or house cat, is a small domesticated carnivorous mammal.  
