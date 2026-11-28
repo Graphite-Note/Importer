@@ -29,6 +29,8 @@ private let steering = "f4000000000000000000000000000004"
 private let notes = "f5000000000000000000000000000005"
 private let stepHeading = "e1000000-0000-4000-8000-000000000001"
 private let toggleHeading = "e2000000-0000-4000-8000-000000000002"
+private let bugs = "f8000000000000000000000000000008"
+private let crash = "f9000000000000000000000000000009"
 private let space = "d0000000-0000-4000-8000-000000000000"
 
 private func hyphenated(_ digits: String) -> String { NotionPageReader.hyphenatedIdentifier(digits)! }
@@ -69,11 +71,19 @@ private let emptyView = """
     <thead><tr>\(header("Name", icon: "font"))</tr></thead><tbody></tbody></table></div></div>
     """
 
+/// An inline database (no page of its own) whose view on the board shows none of its rows.
+private let emptyOwnView = """
+    <div id="\(hyphenated(bugs))" class="collection-content" dir="ltr"><h4 class="collection-title">Bugs</h4>\
+    <div class="collection-content-wrapper"><table class="collection-content"><colgroup><col style="width:100%"/></colgroup>\
+    <thead><tr>\(header("Name", icon: "font"))</tr></thead><tbody></tbody></table></div></div>
+    """
+
 private let boardBody = """
     <nav id="t1" class="block-color-gray table_of_contents"><div class="table_of_contents-item table_of_contents-indent-0">\
     <a class="table_of_contents-link" href="#\(stepHeading)">Step 2: azimuth α</a></div></nav>\
     \(linkedView)\
     \(emptyView)\
+    \(emptyOwnView)\
     <p id="p1" class="" dir="auto"><strong>Impact :</strong>Interruption, and <strong>So:</strong>\u{200B}next.</p>\
     <h2 id="\(stepHeading)" class="" dir="auto">Step 2: <strong>azimuth</strong> <span data-notion-inline-equation="\\alpha" \
     class="notion-text-equation-token" contenteditable="false"><span class="katex">α</span></span></h2>\
@@ -120,6 +130,8 @@ private func fidelityExport() -> Data {
                                                                           body: "<p id=\"b1\" class=\"\" dir=\"auto\">A row.</p>")),
         .stored("Export/Board/Projects/Steering \(steering).html", text: page(steering, title: "Steering",
                                                                              body: "<p id=\"s1\" class=\"\" dir=\"auto\">Another.</p>")),
+        .stored("Export/Board/Bugs \(bugs).csv", text: "\u{FEFF}Name\nCrash\n"),
+        .stored("Export/Board/Bugs/Crash \(crash).html", text: page(crash, title: "Crash", body: "<p id=\"c1\" class=\"\" dir=\"auto\">A bug.</p>")),
         .stored("Export/Board/Notes \(notes).html", text: page(notes, title: "Notes", body: "<p id=\"n1\" class=\"\" dir=\"auto\">Notes.</p>")),
     ]).data
 }
@@ -182,6 +194,11 @@ struct NotionFidelityTests {
             ```
             """), "\(note)")
         #expect(!note.contains("![[Projects.base]]"), "\(note)")
+        // A database's own view showing none of its rows shows none in the page, the database's base all of them.
+        #expect(note.contains("    name: Bugs\n    filters:\n      and:\n        - file.path == \"\"\n"), "\(note)")
+        #expect(!note.contains("![[Bugs.base]]"), "\(note)")
+        #expect(try vault.text("Notion/Board/Bugs.base").hasPrefix("filters: file.folder == \"Notion/Board/Bugs\"\n"))
+        #expect(vault.exists("Notion/Board/Bugs/Crash.md"))
         #expect(result.report.findings.contains { $0.message.hasPrefix("the view “Projects” of a database shows no row in the export") })
         // The database's own base keeps the name first, as its table shows it.
         let base = try vault.text("Notion/Board/Projects.base")

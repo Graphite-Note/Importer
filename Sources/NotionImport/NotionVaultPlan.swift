@@ -430,6 +430,11 @@ struct NotionVaultPlan: NotionLinkResolving, Sendable {
         databaseIdentifier(titled: title).flatMap { placements[$0]?.childFolder }
     }
 
+    func rowsFolder(ofDatabase identifier: String) -> VaultPath? {
+        guard let folder = placements[identifier]?.childFolder, !notePages(inFolder: folder).isEmpty else { return nil }
+        return folder
+    }
+
     private func databaseIdentifier(titled title: String) -> String? {
         let key = NotionVaultPlan.titleKey(title)
         let matches = placements.filter { identifier, placement in

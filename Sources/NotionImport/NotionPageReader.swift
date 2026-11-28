@@ -61,12 +61,15 @@ public protocol NotionLinkResolving {
     /// The folder of the rows of the one database whose title is `title`, as `database(titled:)` finds it, for a view
     /// of it that shows no row; `nil` when none or several have that title.
     func rowsFolder(ofDatabaseTitled title: String) -> VaultPath?
+    /// The folder of the rows of the database `identifier` when some row has a note in it, else `nil`.
+    func rowsFolder(ofDatabase identifier: String) -> VaultPath?
 }
 
 extension NotionLinkResolving {
     public func database(titled title: String) -> NotionLinkTarget? { nil }
     public func rowNotes(_ rowIdentifiers: [String]) -> (folder: VaultPath, notes: [VaultPath], isEveryNote: Bool)? { nil }
     public func rowsFolder(ofDatabaseTitled title: String) -> VaultPath? { nil }
+    public func rowsFolder(ofDatabase identifier: String) -> VaultPath? { nil }
 }
 
 /// A finding of reading a page, for the import report.
@@ -845,12 +848,19 @@ public struct NotionPageReader {
 
     private mutating func blocks(ofInlineDatabase table: HTMLNode, holder: HTMLNode?) -> [MarkdownBlock] {
         let identifier = holder?.attributes["id"].flatMap(NotionPageReader.hyphenatedIdentifier)
-        if let identifier, let base = resolver.target(ofPage: identifier)?.embeddedBase {
-            if inlineDatabases[identifier] == nil { inlineDatabases[identifier] = readDatabaseTable(table) }
-            return [.paragraph([.wikiLink(target: base, label: nil, isEmbed: true)])]
-        }
         let name = holder?.firstDescendant(where: { $0.hasClass("collection-title") })?.textContent
             .trimmingSpacesAndLineBreaks() ?? ""
+        // A view whose table the export gives without a row shows none in Notion (its filter matches none, a tab
+        // of the database's views, a board whose columns are empty): the export gives no other kind of view.
+        let showsNoRow = table.firstDescendant(where: { $0.tagName == "tr" && $0.parent?.tagName == "tbody" }) == nil
+        if let identifier, let base = resolver.target(ofPage: identifier)?.embeddedBase {
+            if inlineDatabases[identifier] == nil { inlineDatabases[identifier] = readDatabaseTable(table) }
+            // The database's own view showing none of its rows: the page shows none, the database's base all.
+            if showsNoRow, let folder = resolver.rowsFolder(ofDatabase: identifier) {
+                return emptyView(of: table, named: name.isEmpty ? resolver.target(ofPage: identifier)?.title ?? "Table" : name, over: folder)
+            }
+            return [.paragraph([.wikiLink(target: base, label: nil, isEmbed: true)])]
+        }
         // A view of a database shown on another page: a base of the database's rows, in the page, with the view's
         // columns and the rows it shows.
         let shown = readDatabaseTable(table)
@@ -879,14 +889,9 @@ public struct NotionPageReader {
                 }
             }
         }
-        // A view that shows no row in the export (its filter matches none) shows none: a base of the database's rows,
-        // with the view's name and columns, whose filter matches no note.
-        let showsNoRow = table.firstDescendant(where: { $0.tagName == "tr" && $0.parent?.tagName == "tbody" }) == nil
+        // A view that shows no row in the export shows none.
         if showsNoRow, !name.isEmpty, let folder = resolver.rowsFolder(ofDatabaseTitled: name) {
-            var (view, displayNames) = shown.baseView(named: name)
-            view.filters = ["file.path == \"\""]
-            note(.simplified, "the view “\(name)” of a database shows no row in the export, so its base shows none: the export does not give the view's filter")
-            return [.codeBlock(language: "base", code: BaseFile(folder: folder, displayNames: displayNames, views: [view]).yaml)]
+            return emptyView(of: table, named: name, over: folder)
         }
         // A linked view whose rows the export does not name names its database by its title alone.
         if !name.isEmpty, let base = resolver.database(titled: name)?.embeddedBase {
@@ -898,6 +903,15 @@ public struct NotionPageReader {
         if !name.isEmpty { result.append(.paragraph([.strong([.text(name)])])) }
         result.append(databaseTable(table))
         return result
+    }
+
+    /// A view of a database that shows none of its rows: a base of the rows' folder with the view's name and columns,
+    /// whose filter matches no note.
+    private mutating func emptyView(of table: HTMLNode, named name: String, over folder: VaultPath) -> [MarkdownBlock] {
+        var (view, displayNames) = readDatabaseTable(table).baseView(named: name)
+        view.filters = ["file.path == \"\""]
+        note(.simplified, "the view “\(name)” of a database shows no row in the export, so its base shows none: the export does not give the view's filter")
+        return [.codeBlock(language: "base", code: BaseFile(folder: folder, displayNames: displayNames, views: [view]).yaml)]
     }
 
     /// A database's table as a Markdown table: its columns and the text of each cell.
