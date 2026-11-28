@@ -7,8 +7,8 @@
  *              files, synced blocks, columns and AI meeting notes.
  *
  * Authors: Bahey Shalash
- * Version: 0.1
- * Date: 27/11/2026
+ * Version: 0.2
+ * Date: 28/11/2026
  */
 
 import ImporterCore
@@ -314,7 +314,13 @@ public struct NotionAPIPageReader {
         if annotations["italic"]?.bool == true { content = [.emphasis(content)] }
         if annotations["strikethrough"]?.bool == true { content = [.strikethrough(content)] }
         if annotations["underline"]?.bool == true { content = [.underline(content)] }
-        if let color = annotations["color"]?.string, color.hasSuffix("_background") { content = [.highlight(content)] }
+        if let color = annotations["color"]?.string {
+            if color.hasSuffix("_background") {
+                content = [.highlight(content)]
+            } else if let hex = NotionColors.textColor(named: color) {
+                content = [.textColor(hex, content)]
+            }
+        }
         return content
     }
 

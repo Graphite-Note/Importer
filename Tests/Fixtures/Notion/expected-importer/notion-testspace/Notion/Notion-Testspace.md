@@ -2,8 +2,7 @@
 
 This workspace has been exported to HTML format, [as described here](https://help.obsidian.md/import/notion), and comprises a single parent-page (this one) and the following sub-pages:
 
-[[Block Reference]]
-
+[[Block Reference]]  
 [[Formatting Tests]]
 
 When importing to Obsidian, if you leave _**Output folder**_ blank all the pages will be stored in a single parent-folder called _**Notion-Testspace**_.

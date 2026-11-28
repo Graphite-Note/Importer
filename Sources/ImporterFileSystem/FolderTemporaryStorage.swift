@@ -6,8 +6,8 @@
  *              compressed zip found inside the export.
  *
  * Authors: Bahey Shalash
- * Version: 0.1
- * Date: 27/11/2026
+ * Version: 0.2
+ * Date: 28/11/2026
  */
 
 import Foundation
@@ -50,7 +50,11 @@ actor FolderTemporaryFile: TemporaryFileWriting {
     }
 
     func append(_ bytes: [UInt8]) throws {
+        #if os(WASI)
         try handle.write(contentsOf: bytes)
+        #else
+        try FileDescriptorIO.write(handle.fileDescriptor, bytes)
+        #endif
     }
 
     func finish() throws -> any RandomAccessSource {

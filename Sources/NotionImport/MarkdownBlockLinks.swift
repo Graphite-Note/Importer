@@ -6,7 +6,7 @@
  *              a page holds inside itself, replaced once the importer has placed those files.
  *
  * Authors: Bahey Shalash
- * Version: 0.1
+ * Version: 0.2
  * Date: 28/11/2026
  */
 
@@ -60,6 +60,8 @@ enum MarkdownBlockLinks {
             case .strikethrough(let children): return .strikethrough(replacingTargets(in: children, targets))
             case .highlight(let children): return .highlight(replacingTargets(in: children, targets))
             case .underline(let children): return .underline(replacingTargets(in: children, targets))
+            case .textColor(let color, let children): return .textColor(color, replacingTargets(in: children, targets))
+            case .backgroundColor(let color, let children): return .backgroundColor(color, replacingTargets(in: children, targets))
             case .link(let destination, let label): return .link(destination: destination, label: replacingTargets(in: label, targets))
             default: return inline
             }

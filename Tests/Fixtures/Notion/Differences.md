@@ -6,7 +6,7 @@ Description: Every difference between the notes this importer writes for Obsidia
              the notes Obsidian Importer expects for it, with the reason for each.
 
 Authors: Bahey Shalash
-Version: 0.3
+Version: 0.4
 Date: 28/11/2026
 -->
 
@@ -16,7 +16,7 @@ Date: 28/11/2026
 
 ## Notion-Testspace and Attachment Tests
 
-Only the end of the file: notes written here end with a line end, as text files do. Upstream's end without one.
+The end of the file: notes written here end with a line end, as text files do. Upstream's end without one. In Notion-Testspace, line 5: the links to the two subpages are the lines of one block (`[[Block Reference]]  ` then `[[Formatting Tests]]`), as Notion draws links to pages one after the other in a compact list, where upstream writes a paragraph each.
 
 ## Block Reference
 
@@ -45,10 +45,9 @@ Only the end of the file: notes written here end with a line end, as text files 
 | 220, 228 | The empty paragraph Notion leaves before "Mathematical Equations" is not written. The line comparison counts the math block and the list item after it as moved past that paragraph's lines, so they show as removed at 220 and added at 228. | Reads the same. |
 | 287 | ` ```latex ` instead of ` ```LaTeX `. | Lowercase language, as in Block Reference. |
 | 77 | `_**double linebreak**_` instead of `_**double**_ _**linebreak**_`. | Two runs of one style with a space between are one run, which reads the same. |
+| 87, 89 | The heading and the paragraph in Notion's pink text are `<span style="color:#d15796">…</span>` around their highlight, and the paragraph's yellow background is `<mark style="background:rgba(212, 167, 44, 0.3)">…</mark>` around it all. | Notion's text and block colors are kept as colors, in HTML that Obsidian draws without a plugin. Upstream drops the colors and keeps the highlight. |
 | 327 | `[[Formatting Tests#Quotes, Callouts + Nesting]]` instead of `[[Formatting Tests]]`. | Notion's export leaves the heading out of the link itself but writes it in the link's text, a Notion address ending in the heading's block identifier. That identifier is a heading of the page, so the link goes to the heading. The next link points at a text block, which Obsidian cannot link to without a block identifier in the note, so it stays a link to the page. |
 | 340 | Line end at the end of the file. | As above. |
-
-The import report's one finding is about this note: a paragraph carries a block color, which Markdown cannot give a block, so the report says it was dropped. Its text keeps the highlights of its own marks.
 
 ## Upstream's database row
 

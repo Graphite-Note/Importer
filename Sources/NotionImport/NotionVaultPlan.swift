@@ -7,7 +7,7 @@
  *              identifier whatever the names Notion shortened.
  *
  * Authors: Bahey Shalash
- * Version: 0.3
+ * Version: 0.4
  * Date: 28/11/2026
  */
 
@@ -162,6 +162,8 @@ struct NotionVaultPlan: NotionLinkResolving, Sendable {
         /// The folder of the page's subpages, attachments or rows, when it has any.
         var childFolder: VaultPath?
         var isBase: Bool
+        /// The base of a database whose page is a note (`path`) of its own: it has text, an icon or a cover.
+        var basePath: VaultPath?
     }
 
     /// The import's folder.
@@ -178,6 +180,8 @@ struct NotionVaultPlan: NotionLinkResolving, Sendable {
     private var attachmentPathsByPage: [String: VaultPath?] = [:]
     private var linkTargets: [VaultPath: String] = [:]
     private var folderNames: [VaultPath: VaultFolderNames] = [:]
+    /// The databases placed with no page of their own, by identifier, in the export's order.
+    private(set) var databasesWithoutPage: [String] = []
 
     init(export: NotionExport, summaries: [String: NotionPageSummary], destination: any ImportDestination,
          root: VaultPath) async throws {
@@ -194,6 +198,11 @@ struct NotionVaultPlan: NotionLinkResolving, Sendable {
         for folder in export.folders {
             subfolders[Array(folder.dropLast()), default: []].append(folder.last ?? "")
         }
+        let pageIdentifierSet = Set(export.pages.map { $0.identifier })
+        var csvsWithoutPage: [[String]: [ExportFile]] = [:]
+        for (identifier, csv) in export.csvFiles.sorted(by: { $0.value.path < $1.value.path }) where !pageIdentifierSet.contains(identifier) {
+            csvsWithoutPage[Array(csv.pathComponents.dropLast()), default: []].append(csv)
+        }
 
         var vaultFolderOf: [[String]: VaultPath] = [[]: root]
         var queue: [[String]] = [[]]
@@ -206,15 +215,26 @@ struct NotionVaultPlan: NotionLinkResolving, Sendable {
             for page in pagesInFolder[exportFolder] ?? [] {
                 let summary = summaries[page.identifier]
                 let title = summary?.title ?? page.titleFromName
-                let childName = String(page.file.name.dropLast(".html".count))
-                let hasChildren = export.folders.contains(exportFolder + [childName])
-                // A database becomes a base over its rows, when the export holds them; else a note with its table.
-                let isBase = summary?.isDatabase == true && (summary?.hasRowsInExport == true || export.csvFiles[page.identifier] != nil)
+                // The folder of the page's subpages: its file's name, or since 2025 the title alone, without the
+                // identifier (`Projects 1a2b….html` beside `Projects/`), for the first page that claims it.
+                var childName = String(page.file.name.dropLast(".html".count))
+                if !export.folders.contains(exportFolder + [childName]), let titleName = NotionExportEntryName(page.file.name)?.title,
+                    !titleName.isEmpty, export.folders.contains(exportFolder + [titleName]), !placedSubfolders.contains(titleName)
+                {
+                    childName = titleName
+                }
+                let hasChildren = export.folders.contains(exportFolder + [childName]) && !placedSubfolders.contains(childName)
+                // A database becomes a base over its rows, when the export holds them; else a note with its table. A
+                // database's page with its own text, icon or cover is also a note, which embeds the base.
+                let isDatabase = summary?.isDatabase == true && (summary?.hasRowsInExport == true || export.csvFiles[page.identifier] != nil)
+                let hasNote = isDatabase && summary?.hasPageContent == true
+                let isBase = isDatabase && !hasNote
                 let pathExtension = isBase ? "base" : "md"
-                let stem = names.claimStem(VaultFileName.stem(forTitle: title),
-                                           withEachOf: hasChildren ? [pathExtension, nil] : [pathExtension])
+                let extensions: [String?] = (hasNote ? ["md", "base"] : [pathExtension]) + (hasChildren ? [nil] : [])
+                let stem = names.claimStem(VaultFileName.stem(forTitle: title), withEachOf: extensions)
                 guard let path = vaultFolder.appending("\(stem).\(pathExtension)") else { continue }
                 var placement = Placement(path: path, childFolder: nil, isBase: pathExtension == "base")
+                if hasNote { placement.basePath = vaultFolder.appending("\(stem).base") }
                 if hasChildren, let childFolder = vaultFolder.appending(stem) {
                     placement.childFolder = childFolder
                     vaultFolderOf[exportFolder + [childName]] = childFolder
@@ -224,6 +244,24 @@ struct NotionVaultPlan: NotionLinkResolving, Sendable {
                 pageIdentifiers[NotionVaultPlan.key(page.file.pathComponents)] = page.identifier
                 titles[page.identifier] = title
                 headings[page.identifier] = summary?.headingTextByBlock ?? [:]
+            }
+            // A database with no page of its own (an inline one since 2025): its CSV beside the page that shows it,
+            // its rows in the folder of its title. It becomes a base there.
+            for csv in csvsWithoutPage[exportFolder] ?? [] {
+                guard let name = NotionExportEntryName(csv.name), placements[name.pageIdentifier] == nil else { continue }
+                let title = name.title.isEmpty ? "Database" : name.title
+                let hasRows = export.folders.contains(exportFolder + [title]) && !placedSubfolders.contains(title)
+                let stem = names.claimStem(VaultFileName.stem(forTitle: title), withEachOf: hasRows ? ["base", nil] : ["base"])
+                guard let path = vaultFolder.appending("\(stem).base") else { continue }
+                var placement = Placement(path: path, childFolder: nil, isBase: true)
+                if hasRows, let childFolder = vaultFolder.appending(stem) {
+                    placement.childFolder = childFolder
+                    vaultFolderOf[exportFolder + [title]] = childFolder
+                    placedSubfolders.insert(title)
+                }
+                placements[name.pageIdentifier] = placement
+                titles[name.pageIdentifier] = title
+                databasesWithoutPage.append(name.pageIdentifier)
             }
             for subfolder in (subfolders[exportFolder] ?? []).sorted() where !placedSubfolders.contains(subfolder) {
                 let title = NotionExportEntryName(subfolder)?.title ?? subfolder
@@ -255,7 +293,8 @@ struct NotionVaultPlan: NotionLinkResolving, Sendable {
 
         // A link names the note alone when no other file of the import has its name, else its path.
         var counts: [String: Int] = [:]
-        let allPaths = placements.values.map({ $0.path }) + attachmentPaths.values
+        let allPaths: [VaultPath] = placements.values.map({ $0.path }) + placements.values.compactMap({ $0.basePath })
+            + Array(attachmentPaths.values)
         for path in allPaths { counts[NotionVaultPlan.linkKey(path), default: 0] += 1 }
         for path in allPaths {
             let isNote = path.name.hasSuffix(".md")
@@ -317,6 +356,11 @@ struct NotionVaultPlan: NotionLinkResolving, Sendable {
         titles[identifier]
     }
 
+    /// The pages placed as notes directly in `folder`.
+    func notePages(inFolder folder: VaultPath) -> [String] {
+        placements.filter { !$0.value.isBase && $0.value.path.parent == folder }.map { $0.key }
+    }
+
     func attachmentPath(atExportPath components: [String]) -> VaultPath? {
         attachmentPaths[NotionVaultPlan.key(components)]
     }
@@ -350,7 +394,8 @@ struct NotionVaultPlan: NotionLinkResolving, Sendable {
 
     func target(ofPage identifier: String) -> NotionLinkTarget? {
         guard let placement = placements[identifier], let target = linkTargets[placement.path] else { return nil }
-        return NotionLinkTarget(linkTarget: target, title: titles[identifier] ?? target, isBase: placement.isBase)
+        return NotionLinkTarget(linkTarget: target, title: titles[identifier] ?? target, isBase: placement.isBase,
+                                baseLinkTarget: placement.basePath.flatMap { linkTargets[$0] })
     }
 
     func attachmentTarget(atExportPath exportPath: [String]) -> String? {
@@ -375,5 +420,18 @@ struct NotionVaultPlan: NotionLinkResolving, Sendable {
 
     func headingText(inPage pageIdentifier: String, block blockIdentifier: String) -> String? {
         headings[pageIdentifier]?[blockIdentifier]
+    }
+
+    func database(titled title: String) -> NotionLinkTarget? {
+        let key = NotionVaultPlan.titleKey(title)
+        let matches = placements.filter { identifier, placement in
+            (placement.isBase || placement.basePath != nil) && titles[identifier].map(NotionVaultPlan.titleKey) == key
+        }
+        guard matches.count == 1, let identifier = matches.first?.key else { return nil }
+        return target(ofPage: identifier)
+    }
+
+    private static func titleKey(_ title: String) -> String {
+        title.lowercased().filter { !$0.isWhitespace }
     }
 }

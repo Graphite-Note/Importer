@@ -9,7 +9,7 @@
  *              links to pages by the identifier their address ends with, and names written composed.
  *
  * Authors: Bahey Shalash
- * Version: 0.1
+ * Version: 0.2
  * Date: 28/11/2026
  */
 
@@ -53,7 +53,7 @@ private let textBody = """
     <p id="b3" class="">Did it<em>.</em> Both <strong>So:</strong>\u{200B}Next and <strong>“</strong>We and a<strong>\u{00A0}</strong>b.</p>\
     <p id="b4" class="">The value of <em><strong>x = π, </strong></em>we get.</p>\
     <p id="b5" class="">A source<a href="https://example.com/notes#3">[3]</a> and https://example.org/council#decadal and #tag.</p>\
-    <p id="b6" class="">It costs $5 and $10.</p><p id="b0" class="">But $a$ is not math here.</p>\
+    <p id="b6" class="">It costs $5 and $10.</p><p id="b0" class="">But $a$ is not math here, &amp;nbsp; is text.</p>\
     <ul id="b7" class="bulleted-list"><li style="list-style-type:disc"><ul id="b8" class="bulleted-list"><li style="list-style-type:circle">neatly</li><li style="list-style-type:circle">handles</li></ul></li></ul>\
     <ul id="b9" class="bulleted-list"><li style="list-style-type:disc"></li></ul>\
     <figure id="c1"><div class="source"><a href="data:image/png;base64,iVBORw0KGgo=">Pasted picture</a></div></figure>\
@@ -122,8 +122,8 @@ struct NotionFormattingTests {
         let note = try vault.text("Notion/Text.md")
         #expect(note.contains("Did it. Both **So**:\u{200B}Next and “We and a\u{00A0}b."), "\(note)")
         #expect(note.contains("The value of _**x = π,**_ we get."), "\(note)")
-        #expect(note.contains("It costs $5 and $10.\n\nBut \\$a\\$ is not math here."), "\(note)")
-        #expect(note.contains("## ==Mission==\n"), "\(note)")
+        #expect(note.contains("It costs $5 and $10.\n\nBut \\$a\\$ is not math here, \\&nbsp; is text."), "\(note)")
+        #expect(note.contains("## <mark style=\"background:rgba(212, 167, 44, 0.3)\">Mission</mark>\n"), "\(note)")
     }
 
     @Test("A list item without text keeps its nested list under it, an empty item stays, a rule opening a note is ***")
@@ -131,9 +131,11 @@ struct NotionFormattingTests {
         let (vault, result) = try await importExport()
         defer { vault.remove() }
         let note = try vault.text("Notion/Text.md")
-        #expect(note.contains("-\n    - neatly\n    - handles\n-\n\n![[Notion/Picture 1.png]]"), "\(note)")
+        #expect(note.contains("-\n    - neatly\n    - handles\n- \u{00A0}\n\n![[Notion/Picture 1.png]]"), "\(note)")
         #expect(try vault.text("Notion/Journal.md") == "***\n\n## Today\n")
-        #expect(result.report.findings.contains { $0.message == "the color of a block was dropped: Markdown gives a block no color" })
+        // A paragraph's background color is a mark of its text in that color.
+        #expect(note.contains("<mark style=\"background:rgba(224, 90, 82, 0.25)\">A red paragraph.</mark>\n"), "\(note)")
+        #expect(!result.report.findings.contains { $0.message.contains("color") })
     }
 
     @Test("A picture held inside the page is written beside the note and embedded")
@@ -168,7 +170,7 @@ struct NotionFormattingTests {
         defer { vault.remove() }
         let note = try vault.text("Notion/Café.md")
         #expect(note.hasPrefix("---\nConfidence: 1\nValue: 42000\n---\n"), "\(note)")
-        #expect(result.report.findings.contains { $0.message == "the number “100%” of the property “Confidence” was kept as 1, without Notion's percent format" })
+        #expect(result.report.findings.contains { $0.message == "numbers of the property “Confidence” are written as numbers, without Notion's percent format" })
         let names = try FileManager.default.contentsOfDirectory(atPath: vault.folder.appendingPathComponent("Notion").path)
         #expect(names.contains("Caf\u{E9}.md"), "\(names.map { Array($0.unicodeScalars) })")
     }

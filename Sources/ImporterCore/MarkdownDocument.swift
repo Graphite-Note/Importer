@@ -7,8 +7,8 @@
  *              MarkdownWriter.
  *
  * Authors: Bahey Shalash
- * Version: 0.1
- * Date: 26/11/2026
+ * Version: 0.2
+ * Date: 28/11/2026
  */
 
 /// A run of inline content.
@@ -25,6 +25,10 @@ public indirect enum MarkdownInline: Equatable, Sendable {
     case highlight([MarkdownInline])
     /// Underlined text, which Markdown has no syntax for (`<u>…</u>`).
     case underline([MarkdownInline])
+    /// Text in a color, `#rrggbb`, written as HTML that Obsidian draws without a plugin (`<span style="color:#e05a52">text</span>`).
+    case textColor(String, [MarkdownInline])
+    /// Text on a background color, a CSS color, written as `<mark style="background:…">text</mark>`, which Obsidian draws.
+    case backgroundColor(String, [MarkdownInline])
     /// Inline code.
     case code(String)
     /// Inline math in TeX (`$…$`).
