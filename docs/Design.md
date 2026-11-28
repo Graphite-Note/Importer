@@ -7,7 +7,7 @@ Description: How the Importer is built: its layers, what the host provides, how 
              Importer.
 
 Authors: Bahey Shalash
-Version: 0.12
+Version: 0.13
 Date: 28/11/2026
 -->
 
@@ -84,7 +84,7 @@ An internal integration's token (`ntn_…`), kept by the host (the Keychain in G
 - Pages (`NotionAPIPageReader`): blocks read page by page with their children into the same Markdown model as the HTML export, so notes are written the same way: rich text with its marks, links and mentions, lists and to-dos, toggles as folded callouts, toggle headings as headings, callouts by icon, code, math, tables, bookmarks, files, child pages and databases as links and embeds, synced blocks copied, columns flattened, a table of contents from the page's headings, AI meeting notes with their summary, notes and transcript. Each note has `notion-id`, its emoji icon as `icon` and its cover as `banner`: a cover from the web as its address, one uploaded to Notion downloaded beside the note and linked.
 - Databases (`NotionAPIBaseWriter`): one base per database over its rows' folder, with the first data source's properties. Table, board, gallery and list views become table, Kanban, cards and list views, with the properties each shows, a board's groups and their order, sorts, covers, and filters of one property each. Calendar, timeline and chart views become table views, reported. Formulas Bases can compute become the base's formulas (`NotionFormulaConverter`, its function table after Obsidian Importer's `formula-converter.ts`). Rollups become formulas over the notes their relation links to (`NotionRollupConverter`: counts, sums, averages, medians, extremes, ranges, unique values, checked shares), reading the related data source's properties to know its title and its tags. The formulas and rollups Bases cannot compute are written as their values and reported.
 - Linked databases (a database showing another's data source, which the search does not list and a page's block names): no base of their own. Their views are added to the base of the database they show, each named after the linked database too (`Board (This week)`), and the page embeds that base on its first such view (`![[Tasks.base#Board (This week)]]`). Pages are written before databases so that every linked view is known when a base is written. A database Notion refuses to give is reported and its embed kept as its title.
-- Rows (`NotionAPIPropertyReader`): the HTML import's types, relations as links inside the import and as titles outside it.
+- Rows (`NotionAPIPropertyReader`): the HTML import's types, relations as links inside the import and as titles outside it. A note whose name is not its page's whole title keeps the title as its `title` and an alias, and a base whose rows hold one shows them by it, as in the HTML import. A base with no view the integration can read gets one named after the database.
 - Files Notion holds are downloaded while their page is written, as their addresses expire after about an hour, into the page's folder, in ranges of 8 MB written piece by piece.
 - A revoked token or Notion unreachable ends the import with what was written and a report that says why. A page unshared during the import is reported and the rest imported.
 

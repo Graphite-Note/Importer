@@ -3,10 +3,11 @@
  * --------------------------------
  * Layer: Tests
  * Description: Notion's rollups as formulas of the base: each function Bases can compute written over the notes the
- *              relation links to, and a whole import of two made-up related databases whose rollups the base computes.
+ *              relation links to, and a whole import of two made-up related databases whose rollups the base computes,
+ *              one of whose rows has a title a file name cannot hold.
  *
  * Authors: Bahey Shalash
- * Version: 0.1
+ * Version: 0.2
  * Date: 27/11/2026
  */
 
@@ -23,6 +24,7 @@ struct NotionAPIRollupTests {
     static let tasks = "80000000-0000-4000-8000-000000000001"
     static let tasksSource = "80000000-0000-4000-8000-000000000002"
     static let homework = "81000000-0000-4000-8000-000000000001"
+    static let problemSet = "82000000-0000-4000-8000-000000000001"
     static let algebra = "71000000-0000-4000-8000-000000000001"
 
     @Test("Each rollup function Bases can compute becomes a formula over the related notes, the others are refused")
@@ -98,7 +100,7 @@ struct NotionAPIRollupTests {
         workspace.rows[tasksSource] = [row(homework, "Homework 1", source: tasksSource, [
             ("Points", .object([("id", .string("points")), ("type", .string("number")), ("number", .number("5"))])),
             ("Done", .object([("id", .string("done")), ("type", .string("checkbox")), ("checkbox", .bool(true))])),
-        ])]
+        ]), row(problemSet, "Problem set 1: signals", source: tasksSource, [])]
         return workspace
     }
 
@@ -127,5 +129,26 @@ struct NotionAPIRollupTests {
         #expect(result.propertyTypes["Per group"] == .number)
         #expect(!result.report.findings.contains { $0.message.hasPrefix("the property “Per group” is") })
         #expect(result.report.findings.contains { $0.message == "the rollup “Per group” uses Notion's count per group, which Bases has no counterpart for, so each note holds its value when imported" })
+    }
+
+    @Test("A row whose title a file name cannot hold keeps it, as its title and alias, and its base shows it")
+    func wholeTitles() async throws {
+        let vault = try TemporaryVault()
+        defer { vault.remove() }
+        let clock = VirtualClock()
+        let workspace = Self.workspace()
+        let transport = ScriptedTransport(clock: clock) { request, _ in workspace.answer(request) }
+        let options = NotionAPIImportOptions(destinationFolder: VaultPath(components: ["Notion"])!, importDate: "2026-11-28")
+        _ = try await NotionAPIImporter.importWorkspace(client: NotionAPIClient(transport: transport, clock: clock),
+                                                        into: FolderImportDestination(vaultFolder: vault.folder), options: options)
+        let row = try vault.text("Notion/Assignments/Problem set 1 signals.md")
+        #expect(row.contains("title: \"Problem set 1: signals\"\naliases:\n  - \"Problem set 1: signals\"\n"), "\(row)")
+        #expect(!(try vault.text("Notion/Assignments/Homework 1.md")).contains("title:"))
+        let base = try vault.text("Notion/Assignments.base")
+        #expect(base.contains("  title: file.asLink(if(note.title, note.title, file.basename))\n"), "\(base)")
+        #expect(base.contains("  formula.title:\n    displayName: Name\n"), "\(base)")
+        #expect(!base.contains("      - file.name\n"), "\(base)")
+        // The courses' rows are named by their titles: their base shows file names.
+        #expect(!(try vault.text("Notion/Courses.base")).contains("note.title"))
     }
 }
