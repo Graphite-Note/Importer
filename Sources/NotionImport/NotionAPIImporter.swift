@@ -7,7 +7,7 @@
  *              properties, files downloaded while their page is written, and the import report.
  *
  * Authors: Bahey Shalash
- * Version: 0.2
+ * Version: 0.3
  * Date: 27/11/2026
  */
 
@@ -562,6 +562,12 @@ struct NotionAPIImportRun: NotionAPIPropertyResolving {
             }
             for finding in reader.findings { report.record(finding.severity, at: item.path, finding.message) }
         }
+        // A title the note's name cannot hold stays whole: as its `title`, and as an alias links can name.
+        if let title = NotionVaultPlan.shownTitle(item.title, ofNoteAt: item.path) {
+            frontMatter.set("title", to: .text(title))
+            frontMatter.set("aliases", to: .list([title]))
+            assign("title", .text, at: item.path)
+        }
         let read = NotionAPIPageReader.read(content, resolver: self)
         for finding in read.findings { report.record(finding.severity, at: item.path, finding.message) }
         let text = frontMatter.yaml + MarkdownWriter.markdown(for: read.blocks)
@@ -639,8 +645,13 @@ struct NotionAPIImportRun: NotionAPIPropertyResolving {
             report.record(.simplified, at: item.path, "the linked database “\(linked.title)” is embedded where its page had it as this base"
                 + (names.isEmpty ? "" : ", opening on " + (names.count == 1 ? "its view " : "its views ") + names.joined(separator: ", ")))
         }
+        let databaseKey = NotionAPIImportRun.key(item.identifier)
+        let rowsShowTitles = items.values.contains { row in
+            row.parent == databaseKey && row.kind == .page && NotionVaultPlan.shownTitle(row.title, ofNoteAt: row.path) != nil
+        }
         let base = NotionAPIBaseWriter.base(for: database, schema: schema["properties"] ?? .null, views: views, dataSource: source,
-                                            rowsFolder: item.folder, formulas: NotionAPIImportRun.convertibleFormulas(of: database))
+                                            rowsFolder: item.folder, formulas: NotionAPIImportRun.convertibleFormulas(of: database),
+                                            showsTitles: rowsShowTitles)
         for finding in base.findings { report.record(finding.severity, at: item.path, finding.message) }
         if let folder = item.path.parent { try await destination.createFolder(at: folder) }
         try await destination.createFolder(at: item.folder)

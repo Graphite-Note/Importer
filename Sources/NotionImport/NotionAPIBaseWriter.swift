@@ -7,7 +7,7 @@
  *              properties they show, their groups, sorts and filters where Bases can express them.
  *
  * Authors: Bahey Shalash
- * Version: 0.2
+ * Version: 0.3
  * Date: 27/11/2026
  */
 
@@ -16,9 +16,11 @@ import ImporterCore
 /// Writes a database's base.
 enum NotionAPIBaseWriter {
     /// The base of `database`, whose data source `dataSource` has the properties `schema`, with `views` as the views
-    /// endpoint gives them, over the notes of `rowsFolder`. `formulas` are the converted formulas, by name.
+    /// endpoint gives them, over the notes of `rowsFolder`. `formulas` are the converted formulas, by name. With
+    /// `showsTitles` (some row's note is not named by its whole title) the rows' names are their titles
+    /// (`NotionDatabaseTable.titleFormula`).
     static func base(for database: JSONValue, schema: JSONValue, views: [JSONValue], dataSource: String, rowsFolder: VaultPath,
-                     formulas: [String: String]) -> (file: BaseFile, findings: [NotionPageFinding]) {
+                     formulas: [String: String], showsTitles: Bool = false) -> (file: BaseFile, findings: [NotionPageFinding]) {
         var findings: [NotionPageFinding] = []
         func note(_ severity: ImportReport.Severity, _ message: String) {
             let finding = NotionPageFinding(severity: severity, message: message)
@@ -122,8 +124,22 @@ enum NotionAPIBaseWriter {
             }
             baseViews.append(baseView)
         }
-        if baseViews.isEmpty { baseViews.append(BaseFile.View(type: "table", name: "Table", order: allColumns)) }
-        let sortedFormulas = formulas.sorted { $0.key < $1.key }.map { (name: $0.key, expression: $0.value) }
+        if baseViews.isEmpty {
+            // No view the integration can read: one table view, named after the database as Notion shows its title.
+            let title = NotionAPIPropertyReader.plainText(database["title"] ?? .null)
+            baseViews.append(BaseFile.View(type: "table", name: title.isEmpty ? "Table" : title, order: allColumns))
+        }
+        var sortedFormulas = formulas.sorted { $0.key < $1.key }.map { (name: $0.key, expression: $0.value) }
+        // Rows whose notes are not named by their whole titles show them, each a link to its note.
+        let titleFormula = NotionDatabaseTable.titleFormula
+        if showsTitles, formulas[titleFormula.name] == nil {
+            let nameKey = "formula." + titleFormula.name
+            for index in baseViews.indices {
+                baseViews[index].order = baseViews[index].order.map { $0 == "file.name" ? nameKey : $0 }
+            }
+            displayNames = displayNames.map { $0.property == "file.name" ? (nameKey, $0.displayName) : $0 }
+            sortedFormulas.insert(titleFormula, at: 0)
+        }
         return (BaseFile(folder: rowsFolder, displayNames: displayNames, views: baseViews, formulas: sortedFormulas), findings)
     }
 
