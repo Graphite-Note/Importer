@@ -7,8 +7,8 @@
  *              and nested lists in the form Obsidian and Graphite read.
  *
  * Authors: Bahey Shalash
- * Version: 0.2
- * Date: 27/11/2026
+ * Version: 0.3
+ * Date: 28/11/2026
  */
 
 /// Obsidian Markdown written from blocks.
@@ -22,7 +22,10 @@
 public enum MarkdownWriter {
     /// The Markdown of `blocks`, ending with a line end, or empty when they write nothing.
     public static func markdown(for blocks: [MarkdownBlock]) -> String {
-        let text = render(blocks)
+        var rendered: [(block: MarkdownBlock, text: String)] = blocks.compactMap { block in render(block).map { (block, $0) } }
+        // A note's text that starts with `---` has it read as the start of its properties: a rule there is `***`.
+        if case .thematicBreak? = rendered.first?.block { rendered[0].text = "***" }
+        let text = rendered.map { $0.text }.joined(separator: "\n\n")
         return text.isEmpty ? "" : text + "\n"
     }
 
@@ -105,8 +108,38 @@ public enum MarkdownWriter {
         var normalized = MarkdownInlineNormalizer.normalize(inlines)
         while let first = normalized.first, first == .lineBreak || first == .text(" ") { normalized.removeFirst() }
         while let last = normalized.last, last == .lineBreak || last == .text(" ") { normalized.removeLast() }
-        let text = renderInlines(normalized, context: context)
+        var lineContext = context
+        lineContext.escapesDollars = dollarsCouldPair(normalized)
+        let text = renderInlines(normalized, context: lineContext)
         return trimmed(text)
+    }
+
+    /// Whether two `$` of a line could pair into inline math as Obsidian reads it: one not followed by a space, then a
+    /// later one not preceded by a space. Only then is a `$` of the text escaped, so that prices stay as written.
+    static func dollarsCouldPair(_ inlines: [MarkdownInline]) -> Bool {
+        let text = Array(dollarText(of: inlines))
+        var hasOpener = false
+        for (index, character) in text.enumerated() where character == "$" {
+            if hasOpener, index > 0, !text[index - 1].isWhitespace { return true }
+            if index + 1 < text.count, !text[index + 1].isWhitespace { hasOpener = true }
+        }
+        return false
+    }
+
+    /// The text of a line as far as its `$` go: the text, math with its delimiters, and a stand-in for the rest.
+    private static func dollarText(of inlines: [MarkdownInline]) -> String {
+        inlines.map { inline -> String in
+            switch inline {
+            case .text(let text): return text
+            case .math: return "$x$"
+            case .strong(let children), .emphasis(let children), .strikethrough(let children), .highlight(let children),
+                .underline(let children):
+                return dollarText(of: children)
+            case .link(_, let label): return dollarText(of: label)
+            case .lineBreak: return " "
+            default: return "x"
+            }
+        }.joined()
     }
 
     // MARK: Lists
@@ -118,7 +151,7 @@ public enum MarkdownWriter {
             let rendered: [(block: MarkdownBlock, text: String)] = item.blocks.compactMap { block in
                 render(block).map { (block, $0) }
             }
-            guard !rendered.isEmpty || item.checkbox != nil else { continue }
+            // An item without text keeps its place: its marker alone.
             var itemMarker = marker(number)
             number += 1
             if let checked = item.checkbox { itemMarker += checked ? " [x]" : " [ ]" }
@@ -135,6 +168,18 @@ public enum MarkdownWriter {
             }
             var itemLines = itemText.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
             if itemLines.isEmpty { itemLines = [""] }
+            // An item whose first block is a list has no text of its own: its marker goes on a line of its own, else
+            // `- - x` would make the nested list's first item the item's text and its other items the item's siblings.
+            let startsWithList: Bool
+            switch rendered.first?.block {
+            case .bulletList?, .numberedList?: startsWithList = true
+            default: startsWithList = false
+            }
+            if startsWithList {
+                lines.append(itemMarker)
+                for line in itemLines { lines.append(line.isEmpty ? "" : indent + line) }
+                continue
+            }
             let first = itemLines[0].isEmpty ? itemMarker : itemMarker + " " + itemLines[0]
             lines.append(first)
             for line in itemLines.dropFirst() {
@@ -165,13 +210,19 @@ public enum MarkdownWriter {
         /// What a line break is written as: a space in headings, `<br>` in callout titles and table cells.
         var lineBreak: String
         var isInTableCell = false
+        /// Whether `$` is escaped: only on a line where two could pair into math (`dollarsCouldPair`).
+        var escapesDollars = true
+        /// Whether the text is a Markdown link's label, where its own brackets are escaped.
+        var isInLinkLabel = false
     }
 
-    private static func renderInlines(_ inlines: [MarkdownInline], context: InlineContext) -> String {
+    /// `inlines` written one after the other, `preceding` and `following` the characters outside them.
+    private static func renderInlines(_ inlines: [MarkdownInline], context: InlineContext, precededBy preceding: Character? = nil,
+                                      followedBy following: Character? = nil) -> String {
         var result = ""
         for (index, inline) in inlines.enumerated() {
-            let following: Character? = index + 1 < inlines.count ? firstCharacter(of: inlines[index + 1]) : nil
-            result += renderInline(inline, context: context, followedBy: following, precededBy: result.last)
+            let next: Character? = index + 1 < inlines.count ? firstCharacter(of: inlines[index + 1]) : following
+            result += renderInline(inline, context: context, followedBy: next, precededBy: result.last ?? preceding)
         }
         return result
     }
@@ -190,18 +241,15 @@ public enum MarkdownWriter {
         case .text(let text):
             return escapeText(text, context: context, followedBy: following, precededBy: preceding)
         case .strong(let children):
-            return wrap(children, opening: "**", closing: "**", context: context)
+            return wrap(children, delimiter: "**", context: context, precededBy: preceding, followedBy: following)
         case .emphasis(let children):
-            // `_`, as Obsidian writes it, unless a letter or digit touches it, where only `*` works.
-            let touchesWord = [preceding, following].contains { $0.map { $0.isLetter || $0.isNumber } ?? false }
-            let delimiter = touchesWord ? "*" : "_"
-            return wrap(children, opening: delimiter, closing: delimiter, context: context)
+            return wrap(children, delimiter: "_", context: context, precededBy: preceding, followedBy: following)
         case .strikethrough(let children):
-            return wrap(children, opening: "~~", closing: "~~", context: context)
+            return wrap(children, delimiter: "~~", context: context, precededBy: preceding, followedBy: following)
         case .highlight(let children):
-            return wrap(children, opening: "==", closing: "==", context: context)
+            return wrap(children, delimiter: "==", context: context, precededBy: preceding, followedBy: following)
         case .underline(let children):
-            return wrap(children, opening: "<u>", closing: "</u>", context: context)
+            return wrapInTags(children, opening: "<u>", closing: "</u>", context: context)
         case .code(let code):
             let flat = code.replacingEvery("\n", with: " ")
             guard !flat.isEmpty else { return "" }
@@ -214,13 +262,7 @@ public enum MarkdownWriter {
             guard !cleaned.isEmpty else { return "" }
             return "$" + (context.isInTableCell ? cleaned.replacingEvery("|", with: "\\|") : cleaned) + "$"
         case .link(let destination, let label):
-            let labelText = trimmed(renderInlines(MarkdownInlineNormalizer.normalize(label), context: context))
-            let plainLabel = MarkdownInlineNormalizer.plainText(of: label).trimmingSpaces()
-            let isWebAddress = destination.hasPrefix("http://") || destination.hasPrefix("https://")
-            if labelText.isEmpty || (isWebAddress && plainLabel == destination) {
-                return isWebAddress ? destination : "<\(destination)>"
-            }
-            return "[" + labelText + "](" + linkDestination(destination) + ")"
+            return renderLink(destination: destination, label: label, context: context, precededBy: preceding, followedBy: following)
         case .wikiLink(let target, let label, let isEmbed):
             var text = isEmbed ? "![[" : "[["
             text += target
@@ -240,13 +282,161 @@ public enum MarkdownWriter {
         }
     }
 
-    private static func wrap(_ children: [MarkdownInline], opening: String, closing: String, context: InlineContext) -> String {
+    /// A link: the spaces at the edges of its label written outside the brackets, so that the words beside it stay
+    /// apart, and its label's own brackets escaped. A label of spaces alone, or one that is the web address itself,
+    /// writes the address. A link to nothing is its label's text.
+    private static func renderLink(destination: String, label: [MarkdownInline], context: InlineContext,
+                                   precededBy preceding: Character?, followedBy following: Character?) -> String {
+        let normalized = MarkdownInlineNormalizer.normalize(label)
+        guard !destination.isEmpty else {
+            return renderInlines(normalized, context: context, precededBy: preceding, followedBy: following)
+        }
+        var labelContext = context
+        labelContext.isInLinkLabel = true
+        let rendered = renderInlines(normalized, context: labelContext)
+        var leading = String(rendered.prefix(while: { $0 == " " }))
+        let core = trimmed(rendered)
+        var trailing = core.isEmpty ? "" : String(rendered.reversed().prefix(while: { $0 == " " }))
+        if preceding.map({ $0.isWhitespace }) ?? true { leading = "" }
+        if following.map({ $0.isWhitespace }) ?? true { trailing = "" }
+        let plainLabel = MarkdownInlineNormalizer.plainText(of: label).trimmingSpaces()
+        let isWebAddress = destination.hasPrefix("http://") || destination.hasPrefix("https://")
+        if core.isEmpty || (isWebAddress && plainLabel == destination) {
+            if core.isEmpty, trailing.isEmpty, let following, following.isLetter || following.isNumber { trailing = " " }
+            let before = leading.last ?? preceding
+            let after = trailing.first ?? following
+            return leading + address(destination, isWebAddress: isWebAddress, precededBy: before, followedBy: after) + trailing
+        }
+        return leading + "[" + core + "](" + linkDestination(destination) + ")" + trailing
+    }
+
+    /// An address shown as itself: bare, as Obsidian writes it, where an autolink reads it whole (after a space or a
+    /// line's start, before one or a line's end, not ending in punctuation an autolink leaves out), else between `<`
+    /// and `>`, which every reader reads whole. An address that cannot go between them is a link with itself as text.
+    private static func address(_ destination: String, isWebAddress: Bool, precededBy preceding: Character?,
+                                followedBy following: Character?) -> String {
+        if destination.contains(where: { $0.isWhitespace || $0 == "<" || $0 == ">" }) {
+            return "[" + escapeText(destination, context: InlineContext(lineBreak: " ", isInLinkLabel: true), followedBy: nil, precededBy: nil)
+                + "](" + linkDestination(destination) + ")"
+        }
+        guard isWebAddress, let last = destination.last else { return "<" + destination + ">" }
+        let opensCleanly = preceding.map { $0.isWhitespace || $0 == "(" || $0 == "*" || $0 == "_" || $0 == "~" } ?? true
+        let closesCleanly = following.map { $0.isWhitespace } ?? true
+        let opening = destination.filter { $0 == "(" }.count, closing = destination.filter { $0 == ")" }.count
+        let endsCleanly = !"?!.,:;*_~'\"".contains(last) && (last != ")" || opening >= closing)
+        return opensCleanly && closesCleanly && endsCleanly ? destination : "<" + destination + ">"
+    }
+
+    /// A style's text between its delimiters, written so that Markdown reads them as its start and end (CommonMark's
+    /// flanking rules, which Obsidian follows): spaces at its edges, no-break and zero-width ones too, go outside it,
+    /// and so does punctuation at an edge where the character outside is neither a space nor punctuation (`did it*.*`
+    /// would show its asterisks). A style holding only punctuation and spaces is written as its text, and one that
+    /// cannot be opened or closed in place (a link right after a letter, inside bold) as its content without the style.
+    /// Emphasis is written with `_`, as Obsidian writes it, unless a letter or digit touches it, where only `*` works.
+    private static func wrap(_ children: [MarkdownInline], delimiter: String, context: InlineContext,
+                             precededBy preceding: Character?, followedBy following: Character?) -> String {
+        var core = children
+        var leading = ""
+        var trailing = ""
+        func takeFront(while shouldTake: (Character) -> Bool) {
+            while case .text(let text)? = core.first {
+                let taken = String(text.prefix(while: shouldTake))
+                leading += taken
+                guard taken.count == text.count else {
+                    core[0] = .text(String(text.dropFirst(taken.count)))
+                    return
+                }
+                core.removeFirst()
+            }
+        }
+        func takeBack(while shouldTake: (Character) -> Bool) {
+            while case .text(let text)? = core.last {
+                let taken = String(String(text.reversed()).prefix(while: shouldTake).reversed())
+                trailing = taken + trailing
+                guard taken.count == text.count else {
+                    core[core.count - 1] = .text(String(text.dropLast(taken.count)))
+                    return
+                }
+                core.removeLast()
+            }
+        }
+        func opens() -> Bool {
+            guard let first = core.first.flatMap(firstCharacter) else { return false }
+            return !isEdgeSpace(first) && (!isPunctuation(first) || isOutsideOfWord(leading.last ?? preceding))
+        }
+        func closes() -> Bool {
+            guard let last = core.last.flatMap(lastCharacter) else { return false }
+            return !isEdgeSpace(last) && (!isPunctuation(last) || isOutsideOfWord(trailing.first ?? following))
+        }
+        takeFront(while: isEdgeSpace)
+        takeBack(while: isEdgeSpace)
+        if core.isEmpty || core.allSatisfy({ inline in
+            if case .text(let text) = inline { return text.allSatisfy { isPunctuation($0) || isEdgeSpace($0) } }
+            return false
+        }) {
+            return escapeText(MarkdownInlineNormalizer.plainText(of: children), context: context, followedBy: following,
+                              precededBy: preceding)
+        }
+        while !opens(), case .text(let text)? = core.first, let first = text.first, isPunctuation(first) {
+            takeFront(while: isPunctuation)
+            takeFront(while: isEdgeSpace)
+        }
+        while !core.isEmpty, !closes(), case .text(let text)? = core.last, let last = text.last, isPunctuation(last) {
+            takeBack(while: isPunctuation)
+            takeBack(while: isEdgeSpace)
+        }
+        guard !core.isEmpty, opens(), closes() else {
+            return renderInlines(children, context: context, precededBy: preceding, followedBy: following)
+        }
+        var opening = delimiter
+        if delimiter == "_", !(isOutsideOfWord(leading.last ?? preceding) && isOutsideOfWord(trailing.first ?? following)) {
+            opening = "*"
+        }
+        // Spaces next to a space outside would show twice.
+        if preceding.map({ $0.isWhitespace }) ?? true {
+            leading = String(leading.drop(while: { $0 == " " || $0 == "\t" || $0 == "\u{200B}" }))
+        }
+        if following.map({ $0.isWhitespace }) ?? true {
+            trailing = String(String(String(trailing.reversed()).drop(while: { $0 == " " || $0 == "\t" || $0 == "\u{200B}" })).reversed())
+        }
+        let before = escapeText(leading, context: context, followedBy: opening.first, precededBy: preceding)
+        let after = escapeText(trailing, context: context, followedBy: following, precededBy: opening.last)
+        return before + opening + renderInlines(core, context: context) + opening + after
+    }
+
+    private static func wrapInTags(_ children: [MarkdownInline], opening: String, closing: String, context: InlineContext) -> String {
         let inner = renderInlines(children, context: context)
         let leading = inner.prefix(while: { $0 == " " })
         let trailing = inner.reversed().prefix(while: { $0 == " " })
         guard leading.count < inner.count else { return inner }
         let core = inner.dropFirst(leading.count).dropLast(trailing.count)
         return String(leading) + opening + core + closing + String(trailing)
+    }
+
+    private static func lastCharacter(of inline: MarkdownInline) -> Character? {
+        switch inline {
+        case .text(let text): return text.last
+        case .lineBreak: return " "
+        default: return "*"
+        }
+    }
+
+    /// A space as a style's edge sees it: Unicode's spaces, the no-break space among them, and the zero-width ones.
+    private static func isEdgeSpace(_ character: Character) -> Bool {
+        character.isWhitespace || character == "\u{200B}" || character == "\u{FEFF}"
+    }
+
+    /// Punctuation as CommonMark's flanking rules see it: ASCII punctuation and Unicode's punctuation and symbols.
+    private static func isPunctuation(_ character: Character) -> Bool {
+        character.isASCII ? asciiPunctuation.contains(character) : character.isPunctuation || character.isSymbol
+    }
+
+    /// Whether a delimiter with `character` beside it, outside the style, is not inside a word: a line's edge, a space
+    /// or punctuation (Unicode's punctuation only, which every reading of the rules counts).
+    private static func isOutsideOfWord(_ character: Character?) -> Bool {
+        guard let character else { return true }
+        if character.isWhitespace { return true }
+        return character.isASCII ? asciiPunctuation.contains(character) : character.isPunctuation
     }
 
     private static func linkDestination(_ destination: String) -> String {
@@ -270,8 +460,10 @@ public enum MarkdownWriter {
             switch character {
             case "\\":
                 result += next.map { asciiPunctuation.contains($0) } ?? true ? "\\\\" : "\\"
-            case "*", "`", "$":
+            case "*", "`":
                 result += "\\" + String(character)
+            case "$":
+                result += context.escapesDollars ? "\\$" : "$"
             case "_":
                 let isWordInside = (previous.map { $0.isLetter || $0.isNumber } ?? false)
                     && (next.map { $0.isLetter || $0.isNumber } ?? false)
@@ -279,14 +471,16 @@ public enum MarkdownWriter {
             case "~", "=", "%":
                 result += next == character ? "\\" + String(character) : String(character)
             case "[":
-                result += next == "[" ? "\\[" : "["
+                result += context.isInLinkLabel || next == "[" ? "\\[" : "["
             case "]":
-                result += next == "(" || next == "]" ? "\\]" : "]"
+                result += context.isInLinkLabel || next == "(" || next == "]" ? "\\]" : "]"
             case "<":
                 let opensTag = next.map { $0.isASCII && ($0.isLetter || $0 == "/" || $0 == "!" || $0 == "?") } ?? false
                 result += opensTag ? "\\<" : "<"
             case "#":
-                result += startsTag(characters, after: index, following: following) ? "\\#" : "#"
+                // A tag starts after a space or a line's start, not inside a word or an address (`page#part`).
+                let isInsideWord = previous.map { $0.isLetter || $0.isNumber || "/.:=&?#_-".contains($0) } ?? false
+                result += !isInsideWord && startsTag(characters, after: index, following: following) ? "\\#" : "#"
             case "|":
                 result += context.isInTableCell ? "\\|" : "|"
             default:
@@ -387,12 +581,52 @@ public enum MarkdownWriter {
 }
 
 /// Inline content put in the shape Markdown can write: a style inside the same style is dropped, styles next to each
-/// other merge, a style holding a line break is split around it, and texts next to each other join. Runs of spaces
-/// become one, as they show in HTML.
+/// other merge, a style holding a line break is split around it, the spaces at a style's edges move out of it (through
+/// the styles inside it too), and texts next to each other join. Runs of spaces become one, as they show in HTML.
 public enum MarkdownInlineNormalizer {
     /// `inlines` put in the shape Markdown can write.
     public static func normalize(_ inlines: [MarkdownInline]) -> [MarkdownInline] {
-        mergeTexts(merge(inlines.flatMap { normalize($0, insideStyles: []) }))
+        mergeTexts(merge(hoistingEdgeSpaces(inlines.flatMap { normalize($0, insideStyles: []) })))
+    }
+
+    /// `inlines` with the spaces at the edges of each style moved out of it, those of the styles at its edges first,
+    /// so that no delimiter stands next to a space inside its style. A style left empty goes.
+    private static func hoistingEdgeSpaces(_ inlines: [MarkdownInline]) -> [MarkdownInline] {
+        var result: [MarkdownInline] = []
+        for inline in inlines {
+            if let (style, children) = style(of: inline) {
+                var inner = mergeTexts(hoistingEdgeSpaces(children))
+                var leading = ""
+                var trailing = ""
+                if case .text(let text)? = inner.first {
+                    let spaces = String(text.prefix(while: isEdgeSpace))
+                    leading = spaces
+                    if spaces.count == text.count { inner.removeFirst() } else { inner[0] = .text(String(text.dropFirst(spaces.count))) }
+                }
+                if case .text(let text)? = inner.last {
+                    let spaces = String(String(String(text.reversed()).prefix(while: isEdgeSpace)).reversed())
+                    trailing = spaces
+                    if spaces.count == text.count {
+                        inner.removeLast()
+                    } else {
+                        inner[inner.count - 1] = .text(String(text.dropLast(spaces.count)))
+                    }
+                }
+                if !leading.isEmpty { result.append(.text(leading)) }
+                if !inner.isEmpty { result.append(make(style, inner)) }
+                if !trailing.isEmpty { result.append(.text(trailing)) }
+            } else if case .link(let destination, let label) = inline {
+                result.append(.link(destination: destination, label: mergeTexts(hoistingEdgeSpaces(label))))
+            } else {
+                result.append(inline)
+            }
+        }
+        return result
+    }
+
+    /// A space a style's delimiter must not stand next to: Unicode's spaces and the zero-width ones.
+    private static func isEdgeSpace(_ character: Character) -> Bool {
+        (character.isWhitespace && !character.isNewline) || character == "\u{200B}" || character == "\u{FEFF}"
     }
 
     private enum Style: Hashable {
