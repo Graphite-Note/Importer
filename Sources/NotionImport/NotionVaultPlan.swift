@@ -423,12 +423,20 @@ struct NotionVaultPlan: NotionLinkResolving, Sendable {
     }
 
     func database(titled title: String) -> NotionLinkTarget? {
+        databaseIdentifier(titled: title).flatMap { target(ofPage: $0) }
+    }
+
+    func rowsFolder(ofDatabaseTitled title: String) -> VaultPath? {
+        databaseIdentifier(titled: title).flatMap { placements[$0]?.childFolder }
+    }
+
+    private func databaseIdentifier(titled title: String) -> String? {
         let key = NotionVaultPlan.titleKey(title)
         let matches = placements.filter { identifier, placement in
             (placement.isBase || placement.basePath != nil) && titles[identifier].map(NotionVaultPlan.titleKey) == key
         }
-        guard matches.count == 1, let identifier = matches.first?.key else { return nil }
-        return target(ofPage: identifier)
+        guard matches.count == 1 else { return nil }
+        return matches.first?.key
     }
 
     func rowNotes(_ rowIdentifiers: [String]) -> (folder: VaultPath, notes: [VaultPath], isEveryNote: Bool)? {

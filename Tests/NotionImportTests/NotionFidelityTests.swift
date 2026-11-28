@@ -8,7 +8,7 @@
  *              line breaks before a change of style, a numbered list starting at another number than 1 inside an
  *              item, links to pages apart, links whose text is a space or nothing, a style over a link's whole text,
  *              Notion's own icon pictures on callouts, a property without a name, a table whose title column is not
- *              first, the default highlight and a toggle heading with math.
+ *              first, the default highlight, a toggle heading with math and a view that shows no row.
  *
  * Authors: Bahey Shalash
  * Version: 0.1
@@ -62,10 +62,18 @@ private let linkedView = """
     </tbody></table></div></div>
     """
 
+/// A view of the same database that shows no row in the export: its filter matches none.
+private let emptyView = """
+    <div id="\(hyphenated("f7000000000000000000000000000007"))" class="collection-content" dir="ltr"><h4 class="collection-title">Projects</h4>\
+    <div class="collection-content-wrapper"><table class="collection-content"><colgroup><col style="width:100%"/></colgroup>\
+    <thead><tr>\(header("Name", icon: "font"))</tr></thead><tbody></tbody></table></div></div>
+    """
+
 private let boardBody = """
     <nav id="t1" class="block-color-gray table_of_contents"><div class="table_of_contents-item table_of_contents-indent-0">\
     <a class="table_of_contents-link" href="#\(stepHeading)">Step 2: azimuth α</a></div></nav>\
     \(linkedView)\
+    \(emptyView)\
     <p id="p1" class="" dir="auto"><strong>Impact :</strong>Interruption, and <strong>So:</strong>\u{200B}next.</p>\
     <h2 id="\(stepHeading)" class="" dir="auto">Step 2: <strong>azimuth</strong> <span data-notion-inline-equation="\\alpha" \
     class="notion-text-equation-token" contenteditable="false"><span class="katex">α</span></span></h2>\
@@ -128,7 +136,7 @@ struct NotionFidelityTests {
         return (vault, result)
     }
 
-    @Test("A view of a database on another page is a base in the page: its columns in order, at their widths, its rows")
+    @Test("A view of a database on another page is a base in the page: its columns in order, at their widths, its rows, none when it shows none")
     func linkedView() async throws {
         let (vault, result) = try await importExport()
         defer { vault.remove() }
@@ -154,6 +162,27 @@ struct NotionFidelityTests {
             ```
             """), "\(note)")
         #expect(result.report.findings.contains { $0.message.hasPrefix("the view “Open projects” of a database shows the rows it showed") })
+        // A view showing no row shows none, under its own name, never the whole database.
+        #expect(note.contains("""
+            ```base
+            filters: file.folder == "Notion/Board/Projects"
+            properties:
+              file.name:
+                displayName: Name
+            views:
+              - type: table
+                name: Projects
+                filters:
+                  and:
+                    - file.path == ""
+                order:
+                  - file.name
+                columnSize:
+                  file.name: 720
+            ```
+            """), "\(note)")
+        #expect(!note.contains("![[Projects.base]]"), "\(note)")
+        #expect(result.report.findings.contains { $0.message.hasPrefix("the view “Projects” of a database shows no row in the export") })
         // The database's own base keeps the name first, as its table shows it.
         let base = try vault.text("Notion/Board/Projects.base")
         #expect(base.contains("    order:\n      - file.name\n      - Due\n"), "\(base)")

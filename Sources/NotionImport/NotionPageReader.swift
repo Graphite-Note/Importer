@@ -58,11 +58,15 @@ public protocol NotionLinkResolving {
     /// their notes, the note of each row in it, in order, and whether those are all the folder's notes; `nil` when no
     /// row has a note.
     func rowNotes(_ rowIdentifiers: [String]) -> (folder: VaultPath, notes: [VaultPath], isEveryNote: Bool)?
+    /// The folder of the rows of the one database whose title is `title`, as `database(titled:)` finds it, for a view
+    /// of it that shows no row; `nil` when none or several have that title.
+    func rowsFolder(ofDatabaseTitled title: String) -> VaultPath?
 }
 
 extension NotionLinkResolving {
     public func database(titled title: String) -> NotionLinkTarget? { nil }
     public func rowNotes(_ rowIdentifiers: [String]) -> (folder: VaultPath, notes: [VaultPath], isEveryNote: Bool)? { nil }
+    public func rowsFolder(ofDatabaseTitled title: String) -> VaultPath? { nil }
 }
 
 /// A finding of reading a page, for the import report.
@@ -875,7 +879,16 @@ public struct NotionPageReader {
                 }
             }
         }
-        // A linked view whose filter shows no row names its database by its title alone.
+        // A view that shows no row in the export (its filter matches none) shows none: a base of the database's rows,
+        // with the view's name and columns, whose filter matches no note.
+        let showsNoRow = table.firstDescendant(where: { $0.tagName == "tr" && $0.parent?.tagName == "tbody" }) == nil
+        if showsNoRow, !name.isEmpty, let folder = resolver.rowsFolder(ofDatabaseTitled: name) {
+            var (view, displayNames) = shown.baseView(named: name)
+            view.filters = ["file.path == \"\""]
+            note(.simplified, "the view “\(name)” of a database shows no row in the export, so its base shows none: the export does not give the view's filter")
+            return [.codeBlock(language: "base", code: BaseFile(folder: folder, displayNames: displayNames, views: [view]).yaml)]
+        }
+        // A linked view whose rows the export does not name names its database by its title alone.
         if !name.isEmpty, let base = resolver.database(titled: name)?.embeddedBase {
             note(.simplified, "the view “\(name)” of a database shows the database's base, without the view's own filter, which the export does not give")
             return [.paragraph([.wikiLink(target: base, label: nil, isEmbed: true)])]
