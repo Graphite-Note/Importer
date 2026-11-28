@@ -2,9 +2,9 @@
  * File: NotionColors.swift
  * ------------------------
  * Layer: Notion
- * Description: Notion's colors as the vault writes them: a text color as a hex color in an HTML span, which
- *              Obsidian draws without a plugin, a background as a highlight, and a callout's background as the callout type of
- *              that color.
+ * Description: Notion's colors as the vault writes them: a text color as a hex color in the Colors plugin's syntax
+ *              (`~={#e05a52}…=~`), which Graphite reads and writes, the yellow background as a highlight, another
+ *              background as a mark in its color, and a callout's background as the callout type of that color.
  *
  * Authors: Bahey Shalash
  * Version: 0.2
