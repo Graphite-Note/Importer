@@ -79,9 +79,9 @@ A further-indented text block, equal to a single new paragraph.
 
 # Nested Formatting
 
-### <span style="color:#d15796">==A Highlighted Heading==</span>
+### ==~={#d15796}A Highlighted Heading=~==
 
-<mark style="background:rgba(212, 167, 44, 0.3)"><span style="color:#d15796">==Here is some text that has been highlighted multiple times.==</span></mark>
+==~={#d15796}Here is some text that has been highlighted multiple times.=~==
 
 # Quotes, Callouts + Nesting
 

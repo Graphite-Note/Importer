@@ -6,7 +6,7 @@ Description: Every difference between the notes this importer writes for Obsidia
              the notes Obsidian Importer expects for it, with the reason for each.
 
 Authors: Bahey Shalash
-Version: 0.4
+Version: 0.5
 Date: 28/11/2026
 -->
 
@@ -45,7 +45,7 @@ The end of the file: notes written here end with a line end, as text files do. U
 | 220, 228 | The empty paragraph Notion leaves before "Mathematical Equations" is not written. The line comparison counts the math block and the list item after it as moved past that paragraph's lines, so they show as removed at 220 and added at 228. | Reads the same. |
 | 287 | ` ```latex ` instead of ` ```LaTeX `. | Lowercase language, as in Block Reference. |
 | 77 | `_**double linebreak**_` instead of `_**double**_ _**linebreak**_`. | Two runs of one style with a space between are one run, which reads the same. |
-| 87, 89 | The heading and the paragraph in Notion's pink text are `<span style="color:#d15796">…</span>` around their highlight, and the paragraph's yellow background is `<mark style="background:rgba(212, 167, 44, 0.3)">…</mark>` around it all. | Notion's text and block colors are kept as colors, in HTML that Obsidian draws without a plugin. Upstream drops the colors and keeps the highlight. |
+| 87, 89 | The heading and the paragraph in Notion's pink text inside their highlight are `==~={#d15796}…=~==`, the paragraph's yellow background the same highlight. | Notion's text colors are kept in the Colors plugin's syntax, which Graphite reads and writes and Obsidian draws with that plugin, inside the highlight so that the markers stay apart. Upstream drops the colors and keeps the highlight. |
 | 327 | `[[Formatting Tests#Quotes, Callouts + Nesting]]` instead of `[[Formatting Tests]]`. | Notion's export leaves the heading out of the link itself but writes it in the link's text, a Notion address ending in the heading's block identifier. That identifier is a heading of the page, so the link goes to the heading. The next link points at a text block, which Obsidian cannot link to without a block identifier in the note, so it stays a link to the page. |
 | 340 | Line end at the end of the file. | As above. |
 

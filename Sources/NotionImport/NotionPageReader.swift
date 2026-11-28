@@ -324,6 +324,9 @@ public struct NotionPageReader {
                 blocks.append(contentsOf: self.blocks(of: body.children))
             }
         }
+        if NotionPageReader.colorsCodeOrMath(blocks) {
+            note(.simplified, "the color of code or math was left off it: no color reaches code or math in Markdown")
+        }
         if droppedBlockColorCount > 0 {
             note(.simplified, droppedBlockColorCount == 1
                 ? "the color of a block was dropped: Markdown gives a block no color"
@@ -1140,6 +1143,21 @@ public struct NotionPageReader {
         func attachmentTarget(atExportPath exportPath: [String]) -> String? { nil }
         func pageIdentifier(atExportPath exportPath: [String]) -> String? { nil }
         func headingText(inPage pageIdentifier: String, block blockIdentifier: String) -> String? { nil }
+    }
+
+    /// Whether some text color of `blocks` holds code or math.
+    static func colorsCodeOrMath(_ blocks: [MarkdownBlock]) -> Bool {
+        blocks.contains { block in
+            switch block {
+            case .paragraph(let inlines), .heading(_, let inlines): return MarkdownInlineNormalizer.colorsCodeOrMath(inlines)
+            case .bulletList(let items), .numberedList(_, let items): return items.contains { colorsCodeOrMath($0.blocks) }
+            case .quote(let body): return colorsCodeOrMath(body)
+            case .callout(_, let title, _, let body): return MarkdownInlineNormalizer.colorsCodeOrMath(title) || colorsCodeOrMath(body)
+            case .table(let header, let rows):
+                return (header + rows.flatMap { $0 }).contains { MarkdownInlineNormalizer.colorsCodeOrMath($0) }
+            default: return false
+            }
+        }
     }
 
     /// The styles over the whole content of `node`: the tags of the one element it holds, of the one that holds, and

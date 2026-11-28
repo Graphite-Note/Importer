@@ -7,7 +7,7 @@
  *              that color.
  *
  * Authors: Bahey Shalash
- * Version: 0.1
+ * Version: 0.2
  * Date: 28/11/2026
  */
 
@@ -42,8 +42,7 @@ public enum NotionColors {
     /// `inlines` in the block color `color`: a text color as for text, a background as a mark in that color, as
     /// Notion draws a block's background behind its text.
     static func coloredBlock(_ inlines: [MarkdownInline], color: String) -> [MarkdownInline] {
-        if color.hasSuffix("_background"), let css = backgroundColor(named: color) { return [.backgroundColor(css, inlines)] }
-        return colored(inlines, color: color)
+        colored(inlines, color: color)
     }
 
     /// The callout type whose color is Notion's background `name` (`red_background`, or `red`), `nil` for gray and the
@@ -67,10 +66,15 @@ public enum NotionColors {
         return nil
     }
 
-    /// `inlines` in Notion's color `color`: a background as a highlight, a text color in its hex color, gray text as
-    /// it is (Notion's gray is its secondary text, kept by its hex color too).
+    /// `inlines` in Notion's color `color`: a text color in its hex color (`~={#e05a52}…=~`, gray too, Notion's
+    /// secondary text), the yellow background as a highlight (`==…==`, Graphite's and Obsidian's own), another
+    /// background as a mark in that color, the one form left in HTML, as Markdown has no other colored highlight.
     static func colored(_ inlines: [MarkdownInline], color: String) -> [MarkdownInline] {
-        if color.hasSuffix("_background") { return [.highlight(inlines)] }
+        if color.hasSuffix("_background") {
+            if color.lowercased().hasPrefix("yellow") { return [.highlight(inlines)] }
+            if let css = backgroundColor(named: color) { return [.backgroundColor(css, inlines)] }
+            return [.highlight(inlines)]
+        }
         if let hex = textColor(named: color) { return [.textColor(hex, inlines)] }
         return inlines
     }

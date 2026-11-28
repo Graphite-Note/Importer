@@ -7,7 +7,7 @@
  *              and nested lists in the form Obsidian and Graphite read.
  *
  * Authors: Bahey Shalash
- * Version: 0.5
+ * Version: 0.6
  * Date: 28/11/2026
  */
 
@@ -285,7 +285,8 @@ public enum MarkdownWriter {
         case .underline(let children):
             return wrapInTags(children, opening: "<u>", closing: "</u>", context: context)
         case .textColor(let color, let children):
-            return wrapInTags(children, opening: "<span style=\"color:" + color + "\">", closing: "</span>", context: context)
+            // The Colors plugin's syntax, which Graphite reads and its Color menu writes, Obsidian with the plugin.
+            return wrapInTags(children, opening: "~={" + color + "}", closing: "=~", context: context)
         case .backgroundColor(let color, let children):
             return wrapInTags(children, opening: "<mark style=\"background:" + color + "\">", closing: "</mark>", context: context)
         case .code(let code):
@@ -443,7 +444,8 @@ public enum MarkdownWriter {
     }
 
     private static func wrapInTags(_ children: [MarkdownInline], opening: String, closing: String, context: InlineContext) -> String {
-        let inner = renderInlines(children, context: context)
+        // The text inside sees the markers beside it: a `=` before a color's `=~` is escaped.
+        let inner = renderInlines(children, context: context, precededBy: opening.last, followedBy: closing.first)
         let leading = inner.prefix(while: { $0 == " " })
         let trailing = inner.reversed().prefix(while: { $0 == " " })
         guard leading.count < inner.count else { return inner }
@@ -506,7 +508,11 @@ public enum MarkdownWriter {
                 let isWordInside = (previous.map { $0.isLetter || $0.isNumber } ?? false)
                     && (next.map { $0.isLetter || $0.isNumber } ?? false)
                 result += isWordInside ? "_" : "\\_"
-            case "~", "=", "%":
+            case "~":
+                // `~~` is a strikethrough, `=~` closes a color and `~={` opens one.
+                let opensColor = next == "=" && index + 2 < characters.count && characters[index + 2] == "{"
+                result += next == "~" || previous == "=" || opensColor ? "\\~" : "~"
+            case "=", "%":
                 result += next == character ? "\\" + String(character) : String(character)
             case "[":
                 result += context.isInLinkLabel || next == "[" ? "\\[" : "["
@@ -637,7 +643,66 @@ public enum MarkdownWriter {
 public enum MarkdownInlineNormalizer {
     /// `inlines` put in the shape Markdown can write.
     public static func normalize(_ inlines: [MarkdownInline]) -> [MarkdownInline] {
-        mergeTexts(merge(hoistingEdgeSpaces(inlines.flatMap { normalize($0, insideStyles: []) })))
+        mergeTexts(merge(hoistingEdgeSpaces(inlines.flatMap(liftingCodeAndMath).flatMap { normalize($0, insideStyles: []) })))
+    }
+
+    /// Whether `inlines` color some code or math, which no color reaches (Graphite and the Colors plugin read no
+    /// color marker inside them): the color is left off them.
+    public static func colorsCodeOrMath(_ inlines: [MarkdownInline]) -> Bool {
+        inlines.contains { inline in
+            switch inline {
+            case .textColor(_, let children): return children.contains(where: holdsCodeOrMath) || colorsCodeOrMath(children)
+            case .link(_, let label): return colorsCodeOrMath(label)
+            default: return style(of: inline).map { colorsCodeOrMath($0.1) } ?? false
+            }
+        }
+    }
+
+    private static func holdsCodeOrMath(_ inline: MarkdownInline) -> Bool {
+        switch inline {
+        case .code, .math: return true
+        default: return style(of: inline).map { $0.1.contains(where: holdsCodeOrMath) } ?? false
+        }
+    }
+
+    /// A text color split around the code and math it holds, which stay uncolored, in the other styles they had.
+    private static func liftingCodeAndMath(_ inline: MarkdownInline) -> [MarkdownInline] {
+        // A color around a whole highlight goes inside it: `==~={#hex}x=~==`, as `~={#hex}==x===~` reads as neither.
+        if case .textColor(let color, let children) = inline {
+            // The same color inside itself (a block's color and its text's) is one color.
+            let flattened = children.flatMap { child -> [MarkdownInline] in
+                if case .textColor(let inner, let grandchildren) = child, inner == color { return grandchildren }
+                return [child]
+            }
+            if flattened.count == 1, case .highlight(let highlighted) = flattened[0] {
+                return [.highlight(liftingCodeAndMath(.textColor(color, highlighted)))]
+            }
+        }
+        guard case .textColor(let color, let children) = inline else {
+            guard let (style, children) = style(of: inline) else { return [inline] }
+            return [make(style, children.flatMap(liftingCodeAndMath))]
+        }
+        func pieces(_ inline: MarkdownInline) -> [(inline: MarkdownInline, isColored: Bool)] {
+            switch inline {
+            case .code, .math: return [(inline, false)]
+            default:
+                guard holdsCodeOrMath(inline), let (style, children) = style(of: inline) else { return [(inline, true)] }
+                return children.flatMap(pieces).map { (make(style, [$0.inline]), $0.isColored) }
+            }
+        }
+        var result: [MarkdownInline] = []
+        var run: [MarkdownInline] = []
+        for piece in children.flatMap(liftingCodeAndMath).flatMap(pieces) {
+            if piece.isColored {
+                run.append(piece.inline)
+            } else {
+                if !run.isEmpty { result.append(.textColor(color, run)) }
+                run = []
+                result.append(piece.inline)
+            }
+        }
+        if !run.isEmpty { result.append(.textColor(color, run)) }
+        return result
     }
 
     /// `inlines` with the spaces at the edges of each style moved out of it, those of the styles at its edges first,
